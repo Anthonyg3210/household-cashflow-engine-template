@@ -286,7 +286,7 @@ def short_chip_label(category: str, amount: float, *, max_len: int = 14) -> str:
         "Home Cleaning": "Cleaning",
         "Homeowners Association Fee 1st": "HOA 1",
         "Homeowners Association Fee 2dn": "HOA 2",
-        "Homeowners Addison Vill Dues": "HOA Adv",
+        "Homeowners Maple Grove Dues": "HOA Maple",
     }
     text = aliases.get(name, name)
     if len(text) > max_len:

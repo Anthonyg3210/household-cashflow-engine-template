@@ -64,7 +64,7 @@ _TRAVEL_RE = re.compile(
     re.I,
 )
 _AUTO_DEALER_RE = re.compile(
-    r"\bKIA\b|\bFORD\b|\bTOYOTA\b|\bHONDA\b|\bCHEVROLET\b|\bBMW\b|DEALER|BONIFACE",
+    r"\bKIA\b|\bFORD\b|\bTOYOTA\b|\bHONDA\b|\bCHEVROLET\b|\bBMW\b|DEALER|DEMOKIADEALER",
     re.I,
 )
 _GROCERY_PARENTS = {"Groceries"}

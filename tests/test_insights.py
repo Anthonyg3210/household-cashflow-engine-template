@@ -1064,7 +1064,7 @@ def test_mortgage_extra_reallocates_to_savings_clears_flux():
     assert "debt payoff" in sc["caption"]
 
 
-def test_merchant_reclass_adi_barbara_not_allowance():
+def test_merchant_reclass_demo_tutor_not_allowance():
     from engine.bank_import import MerchantMapper
 
     m = MerchantMapper.load(conn=None)
@@ -1072,7 +1072,7 @@ def test_merchant_reclass_adi_barbara_not_allowance():
     assert demo_cleaners[0] == "Home Services & Subs"
     assert demo_cleaners[1] == "Home Cleaning Team"
     assert demo_cleaners[2] == "Home Cleaning"
-    barb = m.categorize_full("Zelle payment to Barbara ( tutor) Gornto", -260)
+    barb = m.categorize_full("Zelle payment to Demo Tutor (Sample Learning)", -260)
     assert barb[0] == "School"
     assert barb[1] == "Tutoring"
     assert barb[2] == "Tutor"

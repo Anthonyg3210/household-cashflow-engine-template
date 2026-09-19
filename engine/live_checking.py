@@ -12,7 +12,7 @@ from typing import Any, Optional
 from engine.db import init_db, set_setting
 
 _ROOT = Path(__file__).resolve().parent.parent
-_DEFAULT_LABEL = "TOTAL CHECKING (...8538)"
+_DEFAULT_LABEL = "TOTAL CHECKING (...0000)"
 _SETTING_KEYS = (
     "live_checking_balance",
     "live_checking_as_of",

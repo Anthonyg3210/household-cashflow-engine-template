@@ -4005,7 +4005,7 @@ padding:1rem 1.15rem;margin:0.2rem 0 0.9rem;">
             emoji="💳",
             label="Card balance (owed)",
             value_html=_fmt_pict_money(owed_now, signed=None),
-            sub=f"as of {as_of}" if as_of else "Marriott …3534",
+            sub=f"as of {as_of}" if as_of else "Family card ••••1234",
             kind="brokerage",
         ),
         _pict_card_html(
@@ -7636,7 +7636,7 @@ python scripts/import_bank_csv.py /path/to/chase.csv
     n_black = sum(1 for a in all_actuals if (a.get("source") or "") == BLACK_CARD_SOURCE)
     st.caption(
         _md(
-            f"Wife’s allowance / family card (Marriott …3534). "
+            f"Partner allowance / family card (••••1234). "
             f"**{n_black}** rows tagged `{BLACK_CARD_SOURCE}`. "
             "Replace does **not** use the checking checkbox and never clears bank_csv."
         )

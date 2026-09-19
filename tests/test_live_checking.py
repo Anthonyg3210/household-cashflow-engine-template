@@ -21,35 +21,35 @@ def _settings(db_path: Path) -> dict[str, str]:
 
 
 def test_set_live_checking_writes_json_and_both_dbs(tmp_path: Path):
-    pending = [{"desc": "POS DEBIT CURSOR", "amount": -40.2, "status": "pending"}]
+    pending = [{"desc": "POS DEBIT DEMO SOFTWARE", "amount": -40.2, "status": "pending"}]
     payload = set_live_checking(
-        2785.99,
+        1500.00,
         "2026-09-15",
         pending=pending,
         source="unit_test",
-        prior_available=2826.19,
+        prior_available=1550.00,
         root=tmp_path,
     )
 
     json_path = tmp_path / "data" / "live_checking.json"
     assert json_path.exists()
     raw = json.loads(json_path.read_text(encoding="utf-8"))
-    assert raw["balance"] == 2785.99
+    assert raw["balance"] == 1500.00
     assert raw["as_of"] == "2026-09-15"
-    assert raw["label"] == "TOTAL CHECKING (...8538)"
-    assert "2785.99" in raw["as_of_note"].replace(",", "").replace("$", "")
+    assert raw["label"] == "TOTAL CHECKING (...0000)"
+    assert "1500.00" in raw["as_of_note"].replace(",", "").replace("$", "")
     assert "Pending already reduces available." in raw["as_of_note"]
-    assert "POS DEBIT CURSOR" in raw["as_of_note"]
+    assert "POS DEBIT DEMO SOFTWARE" in raw["as_of_note"]
     assert raw["source"] == "unit_test"
-    assert raw["prior_available"] == 2826.19
+    assert raw["prior_available"] == 1550.00
     assert raw["pending"] == pending
     assert payload["as_of_note"] == raw["as_of_note"]
 
     for db_name in ("cashflow.db", "cloud_bootstrap.db"):
         s = _settings(tmp_path / "data" / db_name)
-        assert s["live_checking_balance"] == "2785.99"
+        assert s["live_checking_balance"] == "1500.00"
         assert s["live_checking_as_of"] == "2026-09-15"
-        assert s["live_checking_label"] == "TOTAL CHECKING (...8538)"
+        assert s["live_checking_label"] == "TOTAL CHECKING (...0000)"
         assert s["live_checking_note"] == raw["as_of_note"]
 
     assert check_live_checking_consistency(root=tmp_path) == []
@@ -65,7 +65,7 @@ def test_set_live_checking_explicit_note(tmp_path: Path):
 
 
 def test_check_consistency_detects_stale_note_and_mismatch(tmp_path: Path):
-    set_live_checking(2785.99, "2026-09-15", root=tmp_path)
+    set_live_checking(1500.00, "2026-09-15", root=tmp_path)
     # Stale note on bootstrap only
     conn = sqlite3.connect(str(tmp_path / "data" / "cloud_bootstrap.db"))
     conn.execute(

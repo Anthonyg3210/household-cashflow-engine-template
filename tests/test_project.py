@@ -206,7 +206,7 @@ def test_merchant_mapper_taxonomy_v2_wells_and_dining():
     assert parent == "Dining"
     assert sub == "Work Lunches"
 
-    parent, sub, legacy = m.categorize_full("TST* FOXTAIL COFFEE - 1 VIERA FL 11/07", -15.0)
+    parent, sub, legacy = m.categorize_full("TST* FOXTAIL COFFEE - 1 DEMO TOWN 11/07", -15.0)
     assert parent == "Dining"
     assert sub == "Coffee / Cafe"
 

@@ -129,17 +129,17 @@ def extra_planned() -> list[dict]:
         ("2028-08-20", -150.0, "Home Pressure Cleaning"),
         ("2028-11-20", -150.0, "Home Pressure Cleaning"),
         # Annual HOA (Data Input!AL6/AL7/AL8) — Dec placements + Jul 1 -$250
-        ("2026-12-25", -268.45, "Homeowners Association Fee 1st"),
-        ("2026-12-25", -268.45, "Homeowners Association Fee 2dn"),
-        ("2026-12-25", -702.67, "Homeowners Addison Vill Dues"),
+        ("2026-12-25", -270.00, "Homeowners Association Fee 1st"),
+        ("2026-12-25", -270.00, "Homeowners Association Fee 2dn"),
+        ("2026-12-25", -700.00, "Homeowners Maple Grove Dues"),
         ("2027-07-01", -250.0, "Homeowners Association Fee 1st"),
-        ("2027-12-24", -268.45, "Homeowners Association Fee 1st"),
-        ("2027-12-24", -268.45, "Homeowners Association Fee 2dn"),
-        ("2027-12-24", -702.67, "Homeowners Addison Vill Dues"),
+        ("2027-12-24", -270.00, "Homeowners Association Fee 1st"),
+        ("2027-12-24", -270.00, "Homeowners Association Fee 2dn"),
+        ("2027-12-24", -700.00, "Homeowners Maple Grove Dues"),
         ("2028-07-01", -250.0, "Homeowners Association Fee 1st"),
-        ("2028-12-26", -268.45, "Homeowners Association Fee 1st"),
-        ("2028-12-26", -268.45, "Homeowners Association Fee 2dn"),
-        ("2028-12-26", -702.67, "Homeowners Addison Vill Dues"),
+        ("2028-12-26", -270.00, "Homeowners Association Fee 1st"),
+        ("2028-12-26", -270.00, "Homeowners Association Fee 2dn"),
+        ("2028-12-26", -700.00, "Homeowners Maple Grove Dues"),
         # Budget workbook Other Income hardcoded
         ("2027-03-11", 24000.0, "Other Income"),
     ]
@@ -352,9 +352,9 @@ def _upsert_cleaned_mortgage_scenario(conn, mortgage_id: Optional[int]) -> None:
     payload = {
         "name": SCENARIO_CLEANED_MORTGAGE,
         "description": (
-            "What-if: drop Excel's FY24-27 day-10 mortgage (−$2,871.09) and keep only "
-            "Loans!X11 day-11 (−$1,081.09). Baseline is Excel-parity (double mortgage). "
-            "Does not change side_gig, wife allowance, or HOA stamps."
+            "What-if: drop Excel's FY24-27 day-10 mortgage (−$2,450.00) and keep only "
+            "Loans day-11 (−$950.00). Baseline is Excel-parity (double mortgage). "
+            "Does not change side_gig, partner allowance, or HOA stamps."
         ),
         "deltas": deltas,
     }
