@@ -1,0 +1,75 @@
+{
+  "as_of": "2026-09-10",
+  "cashflow_link_note": "Demo only \u2014 Savings extra principal is illustrative.",
+  "default_scenario": {
+    "label": "example bonus",
+    "note": "What-if only",
+    "lump_sum": 10000.0,
+    "lump_date": "2027-01-01"
+  },
+  "debts": [
+    {
+      "id": "mortgage_second",
+      "name": "Home equity (demo)",
+      "kind": "second_mortgage",
+      "status": "active",
+      "property": "100 Demo Lane, Springfield, ST 00000",
+      "borrower": "ALEX RIVERA",
+      "loan_number": "DEMO-MTG-2001",
+      "annual_rate": 0.079,
+      "original_balance": 125000.0,
+      "current_balance": 72000.0,
+      "balance_as_of": "2026-09-10",
+      "regular_payment": 950.0,
+      "escrow": 0.0,
+      "extra_principal_monthly": 2000.0,
+      "payment_day": 11,
+      "projection": {
+        "mode": "extra_only_first_month",
+        "first_month": "2026-09"
+      },
+      "goal_narrative": "Demo: extra principal until ~end 2027."
+    },
+    {
+      "id": "mortgage_first",
+      "name": "Primary mortgage (demo)",
+      "kind": "first_mortgage",
+      "status": "active",
+      "property": "100 Demo Lane, Springfield, ST 00000",
+      "borrower": "ALEX RIVERA",
+      "loan_number": "DEMO-MTG-1001",
+      "annual_rate": 0.035,
+      "original_balance": 360000.0,
+      "current_balance": 265000.0,
+      "balance_as_of": "2026-09-11",
+      "regular_payment": 1800.0,
+      "escrow": 650.0,
+      "total_payment": 2450.0,
+      "extra_principal_monthly": 0.0,
+      "payment_day": 1,
+      "projection": {
+        "mode": "full",
+        "first_month": "2026-10"
+      },
+      "goal_narrative": "Demo primary mortgage \u2014 minimum for now."
+    },
+    {
+      "id": "student_loans",
+      "name": "EduServe student loans (demo)",
+      "kind": "student_loans",
+      "status": "active",
+      "servicer": "EduServe",
+      "account_number": "DEMO-EDU-4402",
+      "borrower": "ALEX RIVERA",
+      "annual_rate": 0.055,
+      "current_balance": 98000.0,
+      "regular_payment": 650.0,
+      "payment_day": 6,
+      "projection": {
+        "mode": "full",
+        "first_month": "2026-10"
+      },
+      "goal_narrative": "Demo student loans \u2014 redirect extras after equity loan."
+    }
+  ]
+}

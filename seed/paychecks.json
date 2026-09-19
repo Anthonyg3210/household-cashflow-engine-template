@@ -1,0 +1,33 @@
+{
+  "signConvention": "positive = inflow (paycheck amount per deposit)",
+  "unit": "USD per paycheck deposit (Alex) / per month deposit (Jordan)",
+  "alex": {
+    "2025": 4000.0,
+    "2026": 4200.0,
+    "2027": 4200.0,
+    "2028": 4200.0
+  },
+  "jordan": {
+    "2025": 1400.0,
+    "2026": 1400.0,
+    "2027": 1400.0,
+    "2028": null
+  },
+  "notes": [
+    "SYNTHETIC demo household (Alex Rivera / Jordan Lee) \u2014 not real payroll.",
+    "Alex 2027/2028 copy 2026 amount 4200.00",
+    "Jordan 2028 is blank by design (sunset / savings-only plan)."
+  ],
+  "side_gig_2026": {
+    "amount": 550.0,
+    "cadence": "biweekly_friday_opposite_alex",
+    "anchor_date": "2026-09-18",
+    "end_date": "2026-12-31",
+    "notes": "BrightStart academy side-gig ~$550 on opposite Fridays from Alex Northstar Tech. 2026 only."
+  },
+  "cadence_notes": [
+    "Alex: every other Friday; anchor 2026-09-11.",
+    "Jordan primary: monthly ~1400 on day 8.",
+    "Other Income / Zelle / gifts are ad hoc \u2014 not core forecast stream."
+  ]
+}

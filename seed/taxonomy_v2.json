@@ -1,0 +1,112 @@
+{
+  "version": 2,
+  "note": "Synthetic taxonomy for Household Cashflow Engine template",
+  "parents": [
+    {
+      "name": "Housing",
+      "children": [
+        "Home Mortgage",
+        "HOA",
+        "Home Cleaning"
+      ]
+    },
+    {
+      "name": "Utilities",
+      "children": [
+        "Electric",
+        "Water",
+        "Gas Bill",
+        "Internet"
+      ]
+    },
+    {
+      "name": "Groceries",
+      "children": [
+        "Groceries"
+      ]
+    },
+    {
+      "name": "Dining",
+      "children": [
+        "Fast Food / Food Outings",
+        "Restaurants"
+      ]
+    },
+    {
+      "name": "Shopping",
+      "children": [
+        "General Merchandise"
+      ]
+    },
+    {
+      "name": "Credit Cards",
+      "children": [
+        "Rewards Card Payment"
+      ]
+    },
+    {
+      "name": "Auto",
+      "children": [
+        "Car Insurance",
+        "Car Wash Club",
+        "Fuel"
+      ]
+    },
+    {
+      "name": "School",
+      "children": [
+        "Tuition"
+      ]
+    },
+    {
+      "name": "Income",
+      "children": [
+        "Alex's Income",
+        "Jordan's Income",
+        "Other Income"
+      ]
+    },
+    {
+      "name": "Transfers / Savings",
+      "children": [
+        "Savings",
+        "Partner Allowance",
+        "Jordan's Allowance"
+      ]
+    },
+    {
+      "name": "Work Wash",
+      "children": [
+        "Dry Cleaning"
+      ]
+    },
+    {
+      "name": "Debt",
+      "children": [
+        "Student Loans"
+      ]
+    },
+    {
+      "name": "Lifestyle",
+      "children": [
+        "Park Pass",
+        "Video Stream",
+        "Fitness Membership"
+      ]
+    }
+  ],
+  "excel_name_to_new": {
+    "Fast Food / Food Outings": {
+      "parent": "Dining",
+      "child": "Fast Food / Food Outings"
+    },
+    "Meriott Chase": {
+      "parent": "Credit Cards",
+      "child": "Rewards Card Payment"
+    },
+    "Home Mortgage": {
+      "parent": "Housing",
+      "child": "Home Mortgage"
+    }
+  }
+}

@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Local Streamlit / IDE
+.streamlit/secrets.toml
+.DS_Store
+.idea/
+.vscode/
+
+# Runtime user data — never commit personal finances
+data/*.db
+data/*.db-*
+data/*.csv
+data/*.jsonl
+data/live_checking.json
+data/black_card_*.json
+data/*pending*.json
+data/debts.json
+data/merchant_map.json
+data/retirement_*.json
+data/tax_*.json
+data/family_budget_*.json
+data/net_worth_*.json
+data/payment_preferences.json
+data/plan_features.json
+data/forecast_essentials.json
+data/due_date_learned.json
+data/mitigation_dismissed.json
+data/category_flexibility.json
+data/taxonomy_*.json
+data/*snapshot*.json
+data/*_private.json
+!data/.gitkeep
+!data/README.md
+
+# Optional: allow a tiny tracked demo DB under sample/ only
+!sample/demo_bootstrap.db
+
+# Secrets / exports / caches
+.env.*
+secrets/
+uploads/
+exports/
+*.xlsx
+*.xls
+.cache/
