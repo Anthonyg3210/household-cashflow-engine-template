@@ -296,8 +296,12 @@ def apply_scenario_deltas(
             need_reexpand = True
 
     if need_reexpand:
-        # Rebuild rule flows with disables/overrides; keep non-rule flows
+        # Rebuild rule flows with disables/overrides; keep non-rule flows.
+        # Re-apply actuals override so re-expansion cannot resurrect forecast
+        # lines that actuals already replaced (actual-vs-forecast under scenarios).
         non_rule = [f for f in flows if f.source != "rule"]
+        actual_nr = [f for f in non_rule if f.source == "actual"]
+        other_nr = [f for f in non_rule if f.source != "actual"]
         new_rules = expand_rules(
             rules,
             start,
@@ -307,7 +311,7 @@ def apply_scenario_deltas(
             suppress_rules_through=suppress_rules_through,
             actuals=actuals,
         )
-        flows = new_rules + non_rule
+        flows = apply_actuals_override(new_rules + other_nr, actual_nr)
 
     for delta in deltas:
         if delta.kind in ("disable_rule", "rule_override"):

@@ -34,3 +34,7 @@ python scripts/import_bank_csv.py statement.csv --mode replace --confirm-replace
 - Restore validates the ZIP, auto-backs up the current household, then replaces.
 
 See `DATA_AND_PRIVACY.md` for where truth lives.
+
+## License
+
+**Owner must choose a LICENSE** — this template does not select one.

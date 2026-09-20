@@ -27,3 +27,7 @@
 
 - Prefer the in-app / `create_household_backup` ZIP before Replace import or Restore.
 - Treat backup ZIPs like the live DB: private, local, not uploaded to public repos.
+
+## License
+
+**Owner must choose a LICENSE** — this template does not select one.

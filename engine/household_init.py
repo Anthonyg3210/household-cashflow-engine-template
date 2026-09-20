@@ -144,6 +144,9 @@ def init_demo_household(
     set_init_mode(conn, INIT_MODE_DEMO)
     db.set_setting(conn, SETTING_HOUSEHOLD_NAME, "Alex & Jordan (demo)")
     _install_demo_debts()
+    from .module_flags import default_flags, save_module_flags
+
+    save_module_flags(conn, default_flags(demo=True))
     summary[SETTING_INIT_MODE] = INIT_MODE_DEMO
     return summary
 
@@ -201,6 +204,10 @@ def init_clean_household(
         db.set_setting(conn, "balances_as_of", as_of.strip())
     db.set_setting(conn, "seed_source", "clean_household")
     _write_debts_file(empty_debts_store())
+    from .module_flags import default_flags, save_module_flags, wipe_optional_sidecars
+
+    wipe_optional_sidecars()  # never leave demo tax/retirement/rewards/net-worth files
+    save_module_flags(conn, default_flags(demo=False))
 
     return {
         SETTING_INIT_MODE: INIT_MODE_CLEAN,
@@ -216,75 +223,77 @@ def init_clean_household(
 
 
 def capability_status(conn) -> dict[str, Any]:
-    """Lightweight readiness for the status strip (not a feature matrix)."""
+    """Core / modules / learning strip — Ready, Not enabled, Waiting for history."""
+    from .module_flags import (
+        learning_status,
+        load_module_flags,
+        module_status_map,
+        status_label,
+    )
+
     mode = get_init_mode(conn) or (
         INIT_MODE_DEMO if not db.is_empty(conn) else None
     )
     settings = db.get_settings(conn)
-    rules_n = conn.execute("SELECT COUNT(*) AS c FROM recurring_rules").fetchone()["c"]
-    actuals_n = conn.execute("SELECT COUNT(*) AS c FROM actuals").fetchone()["c"]
-
-    from .debt_paydown import DEBTS_PATH
-
-    debts_n = 0
-    if DEBTS_PATH.exists():
-        try:
-            raw = json.loads(DEBTS_PATH.read_text(encoding="utf-8"))
-            debts_n = len(raw.get("debts") or [])
-        except (OSError, json.JSONDecodeError):
-            debts_n = 0
-
-    tax_on = (_ROOT / "data" / "tax_profile.json").exists()
-    retirement_on = (_ROOT / "data" / "retirement_plan.json").exists()
-    rewards_on = actuals_n > 0 and mode == INIT_MODE_DEMO
-
+    rules_n = int(
+        conn.execute("SELECT COUNT(*) AS c FROM recurring_rules").fetchone()["c"] or 0
+    )
+    actuals_n = int(
+        conn.execute("SELECT COUNT(*) AS c FROM actuals").fetchone()["c"] or 0
+    )
     core_ready = settings is not None and mode is not None
-    modules_enabled = []
-    modules_waiting = []
-    if debts_n > 0:
-        modules_enabled.append("debt")
-    else:
-        modules_waiting.append("debt")
-    if tax_on:
-        modules_enabled.append("tax")
-    else:
-        modules_waiting.append("tax")
-    if retirement_on:
-        modules_enabled.append("retirement")
-    else:
-        modules_waiting.append("retirement")
-    if rewards_on or mode == INIT_MODE_DEMO:
-        if mode == INIT_MODE_DEMO:
-            modules_enabled.append("rewards")
-        else:
-            modules_waiting.append("rewards")
-    else:
-        modules_waiting.append("rewards")
 
-    learning = "ready" if actuals_n >= 5 else "waiting"
+    flags = load_module_flags(conn)
+    status_map = module_status_map(conn)
+    learn = learning_status(conn)
+
+    modules_ready = [
+        m["label"] for m in status_map.values() if m["id"] != "learning" and m["status"] == "ready"
+    ]
+    modules_not_enabled = [
+        m["label"]
+        for m in status_map.values()
+        if m["id"] != "learning" and m["status"] == "not_enabled"
+    ]
+    modules_waiting = [
+        m["label"]
+        for m in status_map.values()
+        if m["id"] != "learning"
+        and m["status"] in ("waiting_for_history", "needs_setup")
+    ]
+
+    if modules_ready and not modules_not_enabled and not modules_waiting:
+        label_modules = "Modules: " + ", ".join(modules_ready)
+    elif not modules_ready and modules_not_enabled and not modules_waiting:
+        label_modules = "Modules not enabled"
+    else:
+        parts = []
+        if modules_ready:
+            parts.append("Ready: " + ", ".join(modules_ready))
+        if modules_not_enabled:
+            parts.append("Not enabled: " + ", ".join(modules_not_enabled))
+        if modules_waiting:
+            parts.append("Waiting: " + ", ".join(modules_waiting))
+        label_modules = " · ".join(parts) if parts else "Modules not enabled"
 
     return {
         "mode": mode,
         "core": "ready" if core_ready else "needs_init",
-        "rules": int(rules_n),
-        "actuals": int(actuals_n),
-        "modules_enabled": modules_enabled,
+        "rules": rules_n,
+        "actuals": actuals_n,
+        "flags": flags,
+        "module_status": status_map,
+        "modules_ready": modules_ready,
+        "modules_not_enabled": modules_not_enabled,
         "modules_waiting": modules_waiting,
-        "learning": learning,
+        "learning": learn["overall"],
         "label_core": "Core ready" if core_ready else "Core needs setup",
-        "label_modules": (
-            "Modules not enabled"
-            if modules_waiting and not modules_enabled
-            else (
-                f"Modules: {', '.join(modules_enabled)}"
-                + (f" · waiting: {', '.join(modules_waiting)}" if modules_waiting else "")
-                if modules_enabled
-                else "Modules not enabled"
-            )
-        ),
+        "label_modules": label_modules,
         "label_learning": (
-            "Learning waiting for transactions"
-            if learning == "waiting"
-            else "Learning has transaction signal"
+            "Learning waiting for history"
+            if learn["overall"] == "waiting_for_history"
+            else "Learning ready"
         ),
     }
+
+

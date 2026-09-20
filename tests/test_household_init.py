@@ -230,5 +230,9 @@ def test_needs_first_run_and_capability(tmp_path, monkeypatch, debts_path):
     cap = capability_status(conn)
     assert cap["mode"] == INIT_MODE_CLEAN
     assert cap["core"] == "ready"
-    assert "debt" in cap["modules_waiting"]
-    assert cap["learning"] == "waiting"
+    # Optional modules start Not enabled on Clean; learning waits for history.
+    assert "Debt Paydown" in (cap.get("modules_not_enabled") or []) or (
+        (cap.get("module_status") or {}).get("debt_paydown", {}).get("status") == "not_enabled"
+    )
+    assert cap["learning"] in ("waiting_for_history", "waiting")
+    assert "not enabled" in cap["label_modules"].lower()

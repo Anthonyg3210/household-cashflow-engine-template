@@ -81,3 +81,20 @@ If you deploy to Streamlit Cloud, use **your own** private app URL and secrets. 
 ## Privacy
 
 Before any push: scan the tree for personal names, addresses, loan IDs, payroll memos, and real account digits. Keep `data/` gitignored.
+
+## License
+
+**Owner must choose a LICENSE** for this repository before publishing or redistributing.
+This template does **not** pick a license for you — add a root `LICENSE` file when you decide
+(MIT, Apache-2.0, proprietary, etc.). Until then, treat the code as all-rights-reserved by the owner.
+
+## Optional modules
+
+Core (dashboard, monthly operating, insights, rules, month detail, scenarios, import, settings,
+forecast guard) is always on. Optional modules — **Debt Paydown**, **Net Worth**, **Retirement**,
+**Tax**, **Rewards** — are toggled under **Settings → Optional modules** (persisted flags).
+
+- **Explore Demo** turns optional modules on.
+- **Start My Household (Clean)** leaves them off and never injects demo debts / tax / retirement / rewards sidecars.
+- Due-date and variable-amount **learning** turn on automatically once transaction history is sufficient (never an install prompt).
+
