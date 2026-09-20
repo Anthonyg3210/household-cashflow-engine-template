@@ -8220,6 +8220,45 @@ elif page == "Settings":
             st.cache_resource.clear()
             st.rerun()
     else:
+        st.warning(
+            "You are in **Explore Demo**. To leave demo and start a blank household, "
+            "use **Start My Household** below (wipes demo rules/data on this app)."
+        )
+        with st.form("settings_switch_clean_form"):
+            st.write("**Start My Household (leave Demo)** — destructive wipe of demo finances")
+            hh_name = st.text_input("Household name (optional)", value="", key="settings_clean_name")
+            start_d = st.date_input("Start date", value=date.today(), key="settings_clean_start")
+            as_of = st.text_input(
+                "Balances as-of (optional)", value="", placeholder="YYYY-MM-DD", key="settings_clean_asof"
+            )
+            start_bal = st.number_input(
+                "Starting balance", value=0.0, step=100.0, format="%.2f", key="settings_clean_bal"
+            )
+            horizon = st.date_input(
+                "Forecast horizon end",
+                value=date(date.today().year + 3, date.today().month, min(date.today().day, 28)),
+                key="settings_clean_end",
+            )
+            warn = st.number_input(
+                "Warning threshold", value=100.0, step=50.0, format="%.2f", key="settings_clean_warn"
+            )
+            leave_demo = st.form_submit_button(
+                "Start My Household — wipe Demo", type="primary", use_container_width=True
+            )
+            if leave_demo:
+                init_clean_household(
+                    conn,
+                    household_name=hh_name,
+                    start_date=start_d,
+                    end_date=horizon,
+                    start_balance=float(start_bal),
+                    warning_threshold=float(warn),
+                    as_of=as_of,
+                )
+                st.cache_resource.clear()
+                st.rerun()
+
+        st.divider()
         prefer_mortgage = st.checkbox(
             "Prefer single mortgage (Loans!X11 −950.00) — cleaned what-if, not Excel-parity",
             value=False,
