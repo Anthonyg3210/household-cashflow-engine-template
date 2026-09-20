@@ -38,6 +38,8 @@ data/mitigation_dismissed.json
 data/category_flexibility.json
 data/taxonomy_*.json
 data/*snapshot*.json
+data/backups/
+data/import_report.md
 data/*_private.json
 !data/.gitkeep
 !data/README.md

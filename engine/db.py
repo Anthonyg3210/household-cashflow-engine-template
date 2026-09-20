@@ -192,6 +192,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE actuals ADD COLUMN txn_type TEXT")
     if "memo" not in cols:
         conn.execute("ALTER TABLE actuals ADD COLUMN memo TEXT")
+    if "external_id" not in cols:
+        conn.execute("ALTER TABLE actuals ADD COLUMN external_id TEXT")
     pcols = {r[1] for r in conn.execute("PRAGMA table_info(planned_items)").fetchall()}
     if "source" not in pcols:
         conn.execute("ALTER TABLE planned_items ADD COLUMN source TEXT")
@@ -377,8 +379,8 @@ def clear_planned_by_source(conn: sqlite3.Connection, source: str) -> int:
 
 def add_actual(conn: sqlite3.Connection, item: dict) -> int:
     cur = conn.execute(
-        """INSERT INTO actuals(date, amount, category, label, enabled, source, parent, subcategory, txn_type, memo)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        """INSERT INTO actuals(date, amount, category, label, enabled, source, parent, subcategory, txn_type, memo, external_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (
             item["date"] if isinstance(item["date"], str) else item["date"].isoformat(),
             float(item["amount"]),
@@ -390,6 +392,7 @@ def add_actual(conn: sqlite3.Connection, item: dict) -> int:
             item.get("subcategory"),
             item.get("txn_type"),
             item.get("memo"),
+            item.get("external_id"),
         ),
     )
     conn.commit()

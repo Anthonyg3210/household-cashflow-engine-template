@@ -71,6 +71,7 @@ from engine.household_init import (
 )
 from engine.bank_import import (
     import_csv,
+    preview_csv_import,
     write_import_report,
     CSV_SOURCE,
     BLACK_CARD_SOURCE,
@@ -82,6 +83,12 @@ from engine.bank_import import (
     ALLOWANCE_3500_FROM,
     is_card_purchase,
     merchant_stem,
+)
+from engine.household_backup import (
+    create_household_backup,
+    restore_household_backup,
+    validate_backup_zip,
+    backups_dir,
 )
 from engine.rewards_optimize import (
     score_family_card_spend,
@@ -7648,18 +7655,24 @@ full-horizon metrics. Duplicate a scenario to tweak quickly.
 elif page == "Import":
     st.title("Import — bank CSV → actuals")
     st.caption(
-        "Due dates learn from bank CSV/screenshots; Mortgage locked to day 11; AT&T & Water are manual."
+        "Safer workflow: preview → Merge or Replace → confirm Replace → "
+        "auto backup before destructive → change report. "
+        "Due dates learn from bank CSV; Mortgage locked to day 11; AT&T & Water are manual."
     )
     st.markdown(
         """
 Upload a bank checking CSV (columns: Details, Posting Date, Description, Amount, Type, Balance).
 Rows are stored in **actuals** with transaction **label** (Description) and Excel **category** buckets
-via keyword merchant maps. Prior imports tagged `source=bank_csv` are replaced; rules/scenarios stay.
+via keyword merchant maps. Rules/scenarios stay untouched.
 
-CLI equivalent:
+**Merge** skips duplicates (fingerprint = stable bank ID if present, else date+amount+normalized memo+source).
+**Replace** clears prior `bank_csv` rows after confirmation and a timestamped household backup.
+
+CLI:
 
 ```bash
-python scripts/import_bank_csv.py /path/to/chase.csv
+python scripts/import_bank_csv.py /path/to/chase.csv --mode merge
+python scripts/import_bank_csv.py /path/to/chase.csv --mode replace --confirm-replace
 ```
 """
     )
@@ -7676,77 +7689,135 @@ python scripts/import_bank_csv.py /path/to/chase.csv
         "/home/box/agent-data/agents/.../attachments/*.csv or any Chase export"
     )
     path_in = st.text_input("Or path on server", value="", placeholder=default_hint)
-    replace = st.checkbox("Replace previous bank_csv actuals", value=True)
 
-    if st.button("Run import", type="primary"):
-        try:
-            if uploaded is not None:
-                import io
-                raw = uploaded.getvalue().decode("utf-8-sig")
-                report = import_csv(
-                    conn, io.StringIO(raw), replace_csv_actuals=replace
-                )
-            elif path_in.strip():
-                report = import_csv(
-                    conn, path_in.strip(), replace_csv_actuals=replace
-                )
-            else:
+    def _load_csv_handle():
+        import io
+
+        if uploaded is not None:
+            raw = uploaded.getvalue().decode("utf-8-sig")
+            return io.StringIO(raw), "upload"
+        if path_in.strip():
+            return path_in.strip(), "path"
+        return None, None
+
+    preview = st.session_state.get("bank_import_preview")
+    if st.button("Preview import", type="secondary"):
+        handle, src = _load_csv_handle()
+        if handle is None:
+            st.error("Provide a file upload or server path")
+        else:
+            try:
+                preview = preview_csv_import(conn, handle)
+                st.session_state["bank_import_preview"] = preview
+                st.session_state["bank_import_source"] = src
+            except Exception as e:
+                st.error(f"Preview failed: {e}")
+                preview = None
+
+    preview = st.session_state.get("bank_import_preview")
+    if preview:
+        st.subheader("Preview")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Rows", preview["rows_parsed"])
+        c2.metric("% categorized", f"{preview['pct_categorized']}%")
+        c3.metric("New (vs DB)", preview["new_row_count"])
+        c4.metric("Duplicates", preview["duplicate_count"])
+        st.caption(
+            f"Date range **{preview.get('date_min')} → {preview.get('date_max')}** "
+            f"({preview.get('span_days')} days) · "
+            f"categorized {preview['categorized']} / uncategorized {preview['uncategorized']}"
+        )
+        if preview.get("overlap"):
+            st.warning(preview.get("overlap_note") or "Overlaps existing bank_csv history")
+        if preview.get("short_history_warning"):
+            st.warning(preview.get("short_history_message") or "Short history export")
+        if preview.get("existing_bank_csv_rows"):
+            st.caption(
+                f"Existing bank_csv in DB: **{preview['existing_bank_csv_rows']}** rows "
+                f"({preview.get('existing_date_min')} → {preview.get('existing_date_max')})"
+            )
+        mode = st.radio(
+            "Import mode",
+            ["Merge", "Replace"],
+            horizontal=True,
+            help="Merge skips duplicate fingerprints. Replace clears prior bank_csv after confirm + backup.",
+        )
+        confirm_replace = False
+        if mode == "Replace":
+            confirm_replace = st.checkbox(
+                "I understand Replace will delete existing bank_csv actuals after a backup",
+                value=False,
+            )
+
+        if st.button("Run import", type="primary"):
+            handle, src = _load_csv_handle()
+            if handle is None:
                 st.error("Provide a file upload or server path")
-                report = None
-            if report:
-                # Keep projection seam settings stable
-                db.set_setting(conn, "start_balance", "5000.00")
-                db.set_setting(conn, "start_date", "2026-09-12")
-                db.set_setting(conn, "end_date", "2029-09-12")
-                settings_now = db.get_settings(conn)
-                write_import_report(
-                    report,
-                    {
-                        "start_balance": settings_now["start_balance"],
-                        "start_date": settings_now["start_date"].isoformat(),
-                        "end_date": settings_now["end_date"].isoformat(),
-                    },
-                    Path(__file__).resolve().parent / "data" / "import_report.md",
-                )
-                st.success(
-                    f"Imported {report['rows_imported']} rows · "
-                    f"{report['pct_categorized']}% categorized · "
-                    f"{report['uncategorized']} uncategorized"
-                )
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Rows", report["rows_imported"])
-                c2.metric("% categorized", f"{report['pct_categorized']}%")
-                c3.metric("Money in", money(report["total_in"]))
-                c4.metric("Money out", money(report["total_out"]))
-                st.subheader("Top uncategorized merchants")
-                if report["top_uncategorized"]:
-                    st.dataframe(
-                        pd.DataFrame(
-                            report["top_uncategorized"], columns=["merchant", "count"]
-                        ),
-                        use_container_width=True,
+            elif mode == "Replace" and not confirm_replace:
+                st.error("Confirm Replace before continuing")
+            else:
+                try:
+                    # Re-open upload buffer if needed
+                    if uploaded is not None:
+                        import io
+
+                        handle = io.StringIO(uploaded.getvalue().decode("utf-8-sig"))
+                    report = import_csv(
+                        conn,
+                        handle,
+                        mode=mode.lower(),
+                        confirm_replace=(mode == "Replace" and confirm_replace),
+                        create_backup=True,
                     )
-                else:
-                    st.write("None")
-                st.subheader("Top categories by spend")
-                st.dataframe(
-                    pd.DataFrame(
-                        report["top_categories_by_spend"], columns=["category", "spend"]
-                    ),
-                    use_container_width=True,
-                )
-                ddl = report.get("due_date_learn") or {}
-                if ddl.get("error"):
-                    st.warning(f"Due-date learn skipped: {ddl['error']}")
-                elif ddl:
-                    st.caption(
-                        f"Due-date learn: {ddl.get('applied_rule_changes', 0)} rule DOM updates · "
-                        f"wrote data/due_date_learned.json"
+                    settings_now = db.get_settings(conn)
+                    write_import_report(
+                        report,
+                        {
+                            "start_balance": settings_now["start_balance"],
+                            "start_date": settings_now["start_date"].isoformat(),
+                            "end_date": settings_now["end_date"].isoformat(),
+                        },
+                        Path(__file__).resolve().parent / "data" / "import_report.md",
                     )
-                st.caption("Wrote data/import_report.md and refreshed merchant maps.")
-                st.cache_resource.clear()
-        except Exception as e:
-            st.error(f"Import failed: {e}")
+                    cr = report.get("change_report") or {}
+                    st.success(
+                        f"{mode}: inserted {cr.get('inserted', report['rows_imported'])} · "
+                        f"skipped dupes {cr.get('skipped_duplicates', 0)} · "
+                        f"cleared {cr.get('cleared_bank_csv', 0)} · "
+                        f"{report['pct_categorized']}% categorized"
+                    )
+                    if (report.get("backup") or {}).get("path"):
+                        st.caption(f"Pre-import backup: `{report['backup']['path']}`")
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Inserted", report["rows_imported"])
+                    c2.metric("Skipped dupes", report.get("rows_skipped_duplicates", 0))
+                    c3.metric("Money in", money(report["total_in"]))
+                    c4.metric("Money out", money(report["total_out"]))
+                    st.subheader("Change report")
+                    st.json(cr)
+                    st.subheader("Top uncategorized merchants")
+                    if report["top_uncategorized"]:
+                        st.dataframe(
+                            pd.DataFrame(
+                                report["top_uncategorized"], columns=["merchant", "count"]
+                            ),
+                            use_container_width=True,
+                        )
+                    else:
+                        st.write("None")
+                    ddl = report.get("due_date_learn") or {}
+                    if ddl.get("error"):
+                        st.warning(f"Due-date learn skipped: {ddl['error']}")
+                    elif ddl:
+                        st.caption(
+                            f"Due-date learn: {ddl.get('applied_rule_changes', 0)} rule DOM updates · "
+                            f"wrote data/due_date_learned.json"
+                        )
+                    st.caption("Wrote data/import_report.md and refreshed merchant maps.")
+                    st.session_state.pop("bank_import_preview", None)
+                    st.cache_resource.clear()
+                except Exception as e:
+                    st.error(f"Import failed: {e}")
 
     st.divider()
     st.subheader("Rewards Card card CSV")
@@ -7805,6 +7876,63 @@ elif page == "Settings":
             )
             st.success("Saved")
             st.rerun()
+
+    st.divider()
+    st.subheader("Household backup & restore")
+    st.caption(
+        "ZIP includes SQLite (settings, rules, planned, actuals, scenarios, merchant maps) "
+        "plus sidecars when present: debts, live checking, net worth, retirement, tax, rewards."
+    )
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button("Create backup ZIP", key="settings_backup_create"):
+            try:
+                info = create_household_backup(label="manual")
+                st.success(f"Backup written: `{info['path']}` ({info.get('bytes', 0)} bytes)")
+                st.json({k: info[k] for k in ("created_at", "table_counts", "sidecars", "init_mode") if k in info})
+            except Exception as e:
+                st.error(f"Backup failed: {e}")
+    with b2:
+        bak_dir = backups_dir()
+        existing = sorted(bak_dir.glob("household_backup_*.zip"), reverse=True)[:20]
+        st.caption(f"Recent backups in `{bak_dir}`: {len(existing)}")
+    restore_up = st.file_uploader("Restore from backup ZIP", type=["zip"], key="restore_zip")
+    restore_path = st.text_input("Or restore path on server", value="", key="restore_path")
+    confirm_restore = st.checkbox(
+        "I understand restore replaces the current household DB/sidecars (auto-backup first)",
+        value=False,
+        key="confirm_restore",
+    )
+    if st.button("Validate & restore", key="settings_restore_run"):
+        try:
+            import tempfile
+
+            zip_target = None
+            if restore_up is not None:
+                tmp = Path(tempfile.mkdtemp()) / "restore.zip"
+                tmp.write_bytes(restore_up.getvalue())
+                zip_target = tmp
+            elif restore_path.strip():
+                zip_target = Path(restore_path.strip())
+            else:
+                st.error("Provide a ZIP upload or path")
+                zip_target = None
+            if zip_target is not None:
+                val = validate_backup_zip(zip_target)
+                st.write("Validation:", "OK" if val.get("ok") else val.get("issues"))
+                st.json(val.get("manifest") or {})
+                if not confirm_restore:
+                    st.error("Confirm restore before replacing current data")
+                else:
+                    result = restore_household_backup(zip_target, auto_backup_current=True)
+                    st.success(
+                        f"Restored DB + {len(result.get('restored_sidecars') or [])} sidecars. "
+                        f"Pre-restore backup: `{(result.get('pre_restore_backup') or {}).get('path')}`"
+                    )
+                    st.cache_resource.clear()
+                    st.rerun()
+        except Exception as e:
+            st.error(f"Restore failed: {e}")
 
     st.divider()
     st.subheader("Net worth cards (optional)")

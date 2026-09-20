@@ -48,15 +48,21 @@ Or run the app with no DB and click **Explore Demo** / **Start My Household**.
 
 ## Import your own bank CSV (runtime)
 
-
-1. Run the app (or seed demo first).
-2. Use the sidebar / import scripts, for example:
+Safer workflow on the **Import** page: **preview → Merge or Replace → confirm Replace → auto backup → change report**.
+Merge skips duplicate fingerprints (stable bank ID when present). See `HOUSEHOLD_SETUP.md`.
 
 ```bash
-python scripts/import_bank_csv.py path/to/your_export.csv
+python scripts/import_bank_csv.py path/to/your_export.csv --preview-only
+python scripts/import_bank_csv.py path/to/your_export.csv --mode merge
+python scripts/import_bank_csv.py path/to/your_export.csv --mode replace --confirm-replace
 ```
 
-Files land under `data/` and stay local. Do not copy them into `seed/` or commit them.
+Files land under `data/` (and backups under `data/backups/`) and stay local. Do not copy them into `seed/` or commit them.
+
+## Backup & privacy
+
+- **Settings → Household backup & restore** writes/reads a whole-household ZIP.
+- Where truth lives: `DATA_AND_PRIVACY.md`.
 
 ## Project layout
 
