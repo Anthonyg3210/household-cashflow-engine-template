@@ -34,32 +34,61 @@ def _count_black_card(db_file: Path) -> int:
     return _count_actuals(db_file, "chase_black_card")
 
 
-def maybe_restore_from_bootstrap(db_path: Optional[Path] = None) -> bool:
-    """Seed cashflow.db from tracked cloud_bootstrap.db (Streamlit Cloud).
+def _peek_init_mode(db_file: Path) -> Optional[str]:
+    """Best-effort read of household_init_mode (avoid circular imports)."""
+    if not db_file.exists():
+        return None
+    try:
+        c = sqlite3.connect(str(db_file))
+        try:
+            row = c.execute(
+                "SELECT value FROM settings WHERE key = 'household_init_mode'"
+            ).fetchone()
+            if row and row[0] in ("demo", "clean"):
+                return str(row[0])
+        finally:
+            c.close()
+    except sqlite3.Error:
+        return None
+    return None
 
-    - If live DB is missing → copy bootstrap.
-    - If live DB exists but has almost no Rewards Card rows while bootstrap is rich
-      (first Cloud boot left an empty seeded DB) → replace once from bootstrap.
-    Never overwrite a live DB that already has substantial black-card data.
 
-    Rule/catalog updates (e.g. new Demo Cleaners recurring rule) are *not*
-    applied here — ``ensure_seeded`` re-runs ``apply_excel_parity`` on every
-    boot so existing Cloud DBs pick up code-side overlays without a wipe.
+def maybe_restore_from_bootstrap(
+    db_path: Optional[Path] = None,
+    *,
+    allow_missing_copy: bool = False,
+) -> bool:
+    """Optionally seed cashflow.db from cloud_bootstrap.db (demo only).
+
+    - **Never** overwrite a Clean Household DB (even if "thin").
+    - Missing live DB: do **not** auto-copy unless ``allow_missing_copy``
+      (Explore Demo / seed_demo). First-run UI chooses Demo vs Clean.
+    - Existing demo/legacy thin Cloud DB vs rich bootstrap → replace once.
+
+    Rule/catalog updates for demo still land via ``ensure_seeded`` +
+    ``apply_excel_parity`` — not via this restore.
     """
     path = Path(db_path) if db_path else DB_PATH
     if not BOOTSTRAP_PATH.exists():
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    if path.exists() and _peek_init_mode(path) == "clean":
+        return False
+
     boot_n = _count_black_card(BOOTSTRAP_PATH)
     if not path.exists():
+        if not allow_missing_copy:
+            return False
         shutil.copy2(BOOTSTRAP_PATH, path)
         return True
+
     live_n = _count_black_card(path)
     live_all = _count_actuals(path)
     boot_all = _count_actuals(BOOTSTRAP_PATH)
-    # Thin/empty Cloud DB from first deploy vs full local bootstrap
+    # Thin/empty Cloud DB from first deploy vs full local bootstrap (demo only)
     thin = (boot_n >= 100 and live_n < 50) or (boot_all >= 500 and live_all < 100)
-    if thin:
+    if thin and _peek_init_mode(path) != "clean":
         bak = path.with_suffix(".db.pre_bootstrap")
         try:
             shutil.copy2(path, bak)
@@ -70,9 +99,17 @@ def maybe_restore_from_bootstrap(db_path: Optional[Path] = None) -> bool:
     return False
 
 
-def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
+def connect(
+    db_path: Optional[Path] = None,
+    *,
+    restore_bootstrap: bool = True,
+    allow_missing_bootstrap_copy: bool = False,
+) -> sqlite3.Connection:
     path = Path(db_path) if db_path else DB_PATH
-    maybe_restore_from_bootstrap(path)
+    if restore_bootstrap:
+        maybe_restore_from_bootstrap(
+            path, allow_missing_copy=allow_missing_bootstrap_copy
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -155,6 +192,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE actuals ADD COLUMN txn_type TEXT")
     if "memo" not in cols:
         conn.execute("ALTER TABLE actuals ADD COLUMN memo TEXT")
+    if "external_id" not in cols:
+        conn.execute("ALTER TABLE actuals ADD COLUMN external_id TEXT")
     pcols = {r[1] for r in conn.execute("PRAGMA table_info(planned_items)").fetchall()}
     if "source" not in pcols:
         conn.execute("ALTER TABLE planned_items ADD COLUMN source TEXT")
@@ -340,8 +379,8 @@ def clear_planned_by_source(conn: sqlite3.Connection, source: str) -> int:
 
 def add_actual(conn: sqlite3.Connection, item: dict) -> int:
     cur = conn.execute(
-        """INSERT INTO actuals(date, amount, category, label, enabled, source, parent, subcategory, txn_type, memo)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        """INSERT INTO actuals(date, amount, category, label, enabled, source, parent, subcategory, txn_type, memo, external_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (
             item["date"] if isinstance(item["date"], str) else item["date"].isoformat(),
             float(item["amount"]),
@@ -353,6 +392,7 @@ def add_actual(conn: sqlite3.Connection, item: dict) -> int:
             item.get("subcategory"),
             item.get("txn_type"),
             item.get("memo"),
+            item.get("external_id"),
         ),
     )
     conn.commit()

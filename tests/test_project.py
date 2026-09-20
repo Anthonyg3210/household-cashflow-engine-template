@@ -677,3 +677,78 @@ def test_net_worth_snapshot_blank_and_roundtrip(tmp_path):
     assert saved["savings_balance"] is None
     assert saved["balances_as_of"] == "2026-09-12"
     assert format_balance_display(saved["fidelity_brokerage_balance"]) == "$12,345.50"
+
+
+def test_scenario_rule_override_does_not_resurrect_actuals_override():
+    """Re-expansion for rule_override must not reintroduce the forecast line actuals replaced."""
+    from datetime import date
+
+    from engine.project import ScenarioDelta, project
+
+    rules = [
+        {
+            "id": 1,
+            "category": "Rent",
+            "day_of_month": 5,
+            "amount": -1000,
+            "cadence": "monthly_dom",
+            "enabled": True,
+        }
+    ]
+    actuals = [
+        {"date": "2026-09-05", "amount": -800, "category": "Rent", "label": "actual rent"}
+    ]
+    deltas = [
+        ScenarioDelta(kind="rule_override", rule_id=1, amount=-900, label="scenario override")
+    ]
+    # Baseline: actual wins
+    base = project(date(2026, 9, 1), date(2026, 9, 5), 2000.0, rules, actuals=actuals)
+    day_b = next(d for d in base["daily"] if d["date"] == date(2026, 9, 5))
+    assert abs(day_b["flow_sum"] - (-800)) < 1e-9
+    assert [f.source for f in day_b["flows"]] == ["actual"]
+
+    # With rule_override re-expansion: still only the actual (not actual+overridden rule)
+    sc = project(
+        date(2026, 9, 1),
+        date(2026, 9, 5),
+        2000.0,
+        rules,
+        actuals=actuals,
+        scenario_deltas=deltas,
+    )
+    day = next(d for d in sc["daily"] if d["date"] == date(2026, 9, 5))
+    sources = [(f.source, f.amount) for f in day["flows"]]
+    assert abs(day["flow_sum"] - (-800)) < 1e-9, sources
+    assert "actual" in [s for s, _ in sources]
+    assert not any(s == "rule" for s, _ in sources), sources
+
+
+def test_scenario_disable_rule_keeps_actuals():
+    from datetime import date
+
+    from engine.project import ScenarioDelta, project
+
+    rules = [
+        {
+            "id": 1,
+            "category": "Rent",
+            "day_of_month": 5,
+            "amount": -1000,
+            "cadence": "monthly_dom",
+            "enabled": True,
+        }
+    ]
+    actuals = [
+        {"date": "2026-09-05", "amount": -800, "category": "Rent", "label": "actual rent"}
+    ]
+    deltas = [ScenarioDelta(kind="disable_rule", rule_id=1)]
+    sc = project(
+        date(2026, 9, 1),
+        date(2026, 9, 5),
+        2000.0,
+        rules,
+        actuals=actuals,
+        scenario_deltas=deltas,
+    )
+    day = next(d for d in sc["daily"] if d["date"] == date(2026, 9, 5))
+    assert abs(day["flow_sum"] - (-800)) < 1e-9

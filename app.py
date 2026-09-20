@@ -57,8 +57,30 @@ from engine.calendar_view import (
     bifurcate_bill_rows,
 )
 from engine.seed_load import ensure_seeded, import_seed, resolve_seed_dir
+from engine.household_init import (
+    INIT_MODE_CLEAN,
+    INIT_MODE_DEMO,
+    SETTING_HOUSEHOLD_NAME,
+    SETTING_INIT_MODE,
+    capability_status,
+    get_init_mode,
+    init_clean_household,
+    init_demo_household,
+    needs_first_run,
+    peek_init_mode,
+)
+from engine.module_flags import (
+    OPTIONAL_MODULES,
+    is_module_enabled,
+    load_module_flags,
+    nav_pages_for_flags,
+    save_module_flags,
+    set_module_enabled,
+    status_label,
+)
 from engine.bank_import import (
     import_csv,
+    preview_csv_import,
     write_import_report,
     CSV_SOURCE,
     BLACK_CARD_SOURCE,
@@ -70,6 +92,12 @@ from engine.bank_import import (
     ALLOWANCE_3500_FROM,
     is_card_purchase,
     merchant_stem,
+)
+from engine.household_backup import (
+    create_household_backup,
+    restore_household_backup,
+    validate_backup_zip,
+    backups_dir,
 )
 from engine.rewards_optimize import (
     score_family_card_spend,
@@ -237,11 +265,18 @@ _inject_app_wallpaper()
 
 @st.cache_resource
 def get_conn():
-    # Restore tracked bootstrap BEFORE opening the connection (Cloud empty-DB fix).
-    # ensure_seeded always re-applies excel_parity so rule overlays (Demo Cleaners, etc.)
-    # land on existing Cloud DBs without requiring a full bootstrap replace.
-    db.maybe_restore_from_bootstrap()
-    conn = db.connect()
+    """Open DB without surprising demo injection.
+
+    Bootstrap auto-copy only for existing demo/legacy DBs (thin Cloud repair).
+    First-run and Clean never pull sample/demo_bootstrap via restore.
+    ensure_seeded applies excel_parity for demo only.
+    """
+    mode = peek_init_mode(db.DB_PATH)
+    # Repair thin demo/legacy DBs only — never copy bootstrap onto a missing DB
+    # (that would skip the Explore Demo vs Start My Household chooser).
+    if mode != INIT_MODE_CLEAN:
+        db.maybe_restore_from_bootstrap(allow_missing_copy=False)
+    conn = db.connect(restore_bootstrap=False)
     ensure_seeded(conn)
     return conn
 
@@ -1625,23 +1660,97 @@ def rerun_clear():
     st.rerun()
 
 
+def _render_first_run_chooser(conn) -> None:
+    """Impossible-to-confuse Demo vs Clean — blocks the rest of the app."""
+    st.title("Household Cashflow Engine")
+    st.markdown("### How do you want to start?")
+    st.caption(
+        "One choice, then the app remembers it. "
+        "Clean never loads the Alex/Jordan demo on restart."
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("Explore Demo")
+        st.write(
+            "Synthetic **Alex Rivera / Jordan Lee** household — rules, paychecks, "
+            "debts, scenarios, and excel-parity overlays. Safe to poke around."
+        )
+        if st.button("Explore Demo", type="primary", use_container_width=True, key="btn_explore_demo"):
+            init_demo_household(conn)
+            st.cache_resource.clear()
+            st.rerun()
+    with c2:
+        st.subheader("Start My Household")
+        st.write(
+            "Blank portable household — **no** demo rules, paychecks, debts, "
+            "bonuses, tax/retirement/rewards seeds, or excel-parity overlays."
+        )
+        with st.form("clean_household_form"):
+            hh_name = st.text_input("Household name (optional)", value="")
+            start_d = st.date_input("Start date", value=date.today())
+            as_of = st.text_input("Balances as-of (optional)", value="", placeholder="YYYY-MM-DD")
+            start_bal = st.number_input("Starting balance", value=0.0, step=100.0, format="%.2f")
+            horizon = st.date_input(
+                "Forecast horizon end",
+                value=date(date.today().year + 3, date.today().month, min(date.today().day, 28)),
+            )
+            warn = st.number_input("Warning threshold", value=100.0, step=50.0, format="%.2f")
+            submitted = st.form_submit_button("Start My Household", use_container_width=True)
+            if submitted:
+                init_clean_household(
+                    conn,
+                    household_name=hh_name,
+                    start_date=start_d,
+                    end_date=horizon,
+                    start_balance=float(start_bal),
+                    warning_threshold=float(warn),
+                    as_of=as_of,
+                )
+                st.cache_resource.clear()
+                st.rerun()
+
+
+def _render_capability_strip(conn) -> None:
+    """Core / modules / learning — Ready, Not enabled, Waiting for history."""
+    cap = capability_status(conn)
+    mode = cap.get("mode")
+    mode_lbl = (
+        "Mode: Explore Demo"
+        if mode == INIT_MODE_DEMO
+        else ("Mode: My Household" if mode == INIT_MODE_CLEAN else "Mode: unset")
+    )
+    st.sidebar.markdown(f"**{mode_lbl}**")
+    st.sidebar.caption(
+        f"{cap['label_core']} · {cap['label_modules']} · {cap['label_learning']}"
+    )
+    mod = cap.get("module_status") or {}
+    chips = []
+    for key in ("debt_paydown", "net_worth", "retirement", "tax", "rewards", "learning"):
+        item = mod.get(key) or {}
+        if not item:
+            continue
+        chips.append(f"{item.get('label', key)}: {item.get('status_label', '')}")
+    if chips:
+        st.sidebar.caption(" · ".join(chips))
+
+
+
+
+# First-run gate (before nav) — empty DB with no mode must choose.
+_init_mode = get_init_mode(conn)
+if _init_mode is None and (needs_first_run(db.DB_PATH) or db.is_empty(conn)):
+    # ensure_seeded left needs_init; show chooser only.
+    _render_first_run_chooser(conn)
+    st.stop()
+
 # Sidebar nav
 st.sidebar.title("Household Cashflow Engine")
+_render_capability_strip(conn)
+_module_flags = load_module_flags(conn)
+_nav_pages = nav_pages_for_flags(_module_flags)
 page = st.sidebar.radio(
     "Pages",
-    [
-        "Household Cashflow Engine Dashboard",
-        "Household monthly operating income & expenses",
-        "Household spending & income insights",
-        "Rewards Card — demo rewards card",
-        "Household debt paydown",
-        "Retirement runway",
-        "Rules",
-        "Month detail",
-        "Scenarios",
-        "Import",
-        "Settings",
-    ],
+    _nav_pages,
     label_visibility="collapsed",
 )
 
@@ -1653,9 +1762,14 @@ all_actuals = db.list_actuals(conn)
 actuals = [a for a in all_actuals if (a.get("source") or "") != BLACK_CARD_SOURCE]
 scenarios = db.list_scenarios(conn)
 
+_hh = conn.execute(
+    "SELECT value FROM settings WHERE key = ?", (SETTING_HOUSEHOLD_NAME,)
+).fetchone()
+_hh_name = (_hh["value"] if _hh else "") or ""
 st.sidebar.caption(
     _md(
-        f"Horizon {settings['start_date']} → {settings['end_date']}\n\n"
+        (f"{_hh_name}\n\n" if _hh_name else "")
+        + f"Horizon {settings['start_date']} → {settings['end_date']}\n\n"
         f"Start bal {money(settings['start_balance'])} · warn < {money(settings['warning_threshold'])}"
     )
 )
@@ -2675,7 +2789,7 @@ padding:0.85rem 1rem;min-height:7.5rem;">
 padding:0.85rem 1rem;min-height:7.5rem;">
   <div style="font-size:1.4rem;">💜</div>
   <div style="font-weight:700;color:#111827;margin-top:0.2rem;">Jordan's \\$1,500 paycheck</div>
-  <div style="color:#4b5563;font-size:0.9rem;margin:0.25rem 0;">OK for bills through <b>{pri.get('sunset', SECONDARY_SUNSET_MONTH)}</b> · then \\$0 in the plan</div>
+  <div style="color:#4b5563;font-size:0.9rem;margin:0.25rem 0;">OK for bills through <b>{pri.get('sunset', SECONDARY_SUNSET_MONTH)}</b> · then \$0 in the plan</div>
   <div style="font-weight:700;color:{colors.get(pl,'#333')};margin-top:0.45rem;">
     {icons.get(pl,'•')} {"Still inside the window" if pl=="green" else ("Watch — 2028+ still covering bills" if pl=="orange" else ("2028+ still covering bills" if pl=="red" else "—"))}
   </div>
@@ -3849,8 +3963,56 @@ Green = you’re staying inside those windows. It turns yellow/red only if the *
 
 
 # ---------- REWARDS CARD / WIFE'S ALLOWANCE FAMILY CARD ----------
+
+# ---------- OPTIONAL MODULE ENABLE GATES ----------
+elif page == "Enable Rewards":
+    st.title("Rewards")
+    st.info(
+        "Rewards is optional and not enabled yet. "
+        "Enable it to import a rewards-card CSV. Nothing is loaded until you import."
+    )
+    if st.button("Enable Rewards module", type="primary", key="enable_rewards_mod"):
+        set_module_enabled(conn, "rewards", True)
+        st.success("Rewards enabled — import a card CSV when ready.")
+        st.rerun()
+    st.stop()
+
+elif page == "Enable Debt Paydown":
+    st.title("Debt Paydown")
+    st.info(
+        "Debt Paydown is optional and not enabled yet. "
+        "Enable it to track mortgages/loans. A clean household starts with an empty debt list."
+    )
+    if st.button("Enable Debt Paydown module", type="primary", key="enable_debt_mod"):
+        set_module_enabled(conn, "debt_paydown", True)
+        st.success("Debt Paydown enabled — add debts when ready.")
+        st.rerun()
+    st.stop()
+
+elif page == "Enable Retirement":
+    st.title("Retirement")
+    st.info(
+        "Retirement (and its Tax layer) is optional and not enabled yet. "
+        "Enable it to configure your own plan — demo Alex data is never injected on a clean household."
+    )
+    if st.button("Enable Retirement module", type="primary", key="enable_ret_mod"):
+        set_module_enabled(conn, "retirement", True)
+        # Tax is nested; leave off until explicitly enabled in Settings.
+        st.success("Retirement enabled — add your plan when ready.")
+        st.rerun()
+    st.stop()
+
 elif page == "Rewards Card — demo rewards card":
     st.title("Family card — Rewards Card")
+    if not is_module_enabled(conn, "rewards"):
+        st.info(
+            "Rewards module is not enabled. Use **Enable Rewards** in the sidebar, "
+            "or turn it on under Settings → Optional modules."
+        )
+        if st.button("Enable Rewards now", key="rewards_enable_inline"):
+            set_module_enabled(conn, "rewards", True)
+            st.rerun()
+        st.stop()
     st.caption(
         "This is the card Jordan uses for everyday family spending "
         "(groceries, gas, kids, Amazon). "
@@ -4495,8 +4657,24 @@ background:linear-gradient(135deg,#eef2fb 0%,#f7f9fc 100%);border:1px solid #c5d
 # ---------- DEBT PAYDOWN ----------
 elif page == "Household debt paydown":
     st.title("Household debt paydown")
+    if not is_module_enabled(conn, "debt_paydown"):
+        st.info(
+            "Debt Paydown is not enabled. Use **Enable Debt Paydown** in the sidebar, "
+            "or turn it on under Settings → Optional modules."
+        )
+        if st.button("Enable Debt Paydown now", key="debt_enable_inline"):
+            set_module_enabled(conn, "debt_paydown", True)
+            st.rerun()
+        st.stop()
 
     _debt_store = load_debts()
+    if not (_debt_store.get("debts") or []):
+        st.info(
+            "Debt Paydown is enabled but no debts are configured yet. "
+            "Add debts under data/debts.json or use the form below when available. "
+            "Explore Demo ships synthetic mortgages; Clean never injects them."
+        )
+        st.stop()
     _second = get_debt(_debt_store, "mortgage_second")
     _first = get_debt(_debt_store, "mortgage_first")
     _stu = get_debt(_debt_store, "student_loans")
@@ -6066,6 +6244,22 @@ elif page == "Household debt paydown":
 # ---------- RETIREMENT RUNWAY ----------
 elif page == "Retirement runway":
     st.title("Retirement runway")
+    if not is_module_enabled(conn, "retirement"):
+        st.info(
+            "Retirement is not enabled. Use **Enable Retirement** in the sidebar, "
+            "or turn it on under Settings → Optional modules. "
+            "Clean households never get a demo Alex plan."
+        )
+        if st.button("Enable Retirement now", key="ret_enable_inline"):
+            set_module_enabled(conn, "retirement", True)
+            st.rerun()
+        st.stop()
+    if not Path("data/retirement_plan.json").exists():
+        st.info(
+            "Retirement is enabled but not configured yet. "
+            "Add data/retirement_plan.json when ready — no demo plan is auto-loaded."
+        )
+        st.stop()
     st.caption(_md("Age-aware Comfort targets at 50 / 55 / 60 · BrokerageLink stays on this page only."))
 
     _ret_plan = load_retirement_plan()
@@ -6667,455 +6861,462 @@ background:linear-gradient(135deg,#eef2fb 0%,#f7f9fc 100%);border:1px solid #c5d
     # --- Tax layer (does not replace Retirement OS / Floor·Comfort·Life) ---
     st.divider()
     st.markdown("### Tax layer")
-    st.caption(
-        _md(
-            "MFJ 2026 planning estimate · Florida state income tax **$0**. "
-            "Does not change Floor / Comfort / Life runway math. "
-            "BrokerageLink stays pre-tax until you actually convert."
+    if not is_module_enabled(conn, "tax"):
+        st.info(
+            "Tax module is not enabled. Turn it on under Settings → Optional modules. "
+            "Clean households never ship a demo tax profile."
         )
-    )
+    else:
 
-    try:
-        _tax_bundle = tax_layer_bundle()
-        _tax_base = _tax_bundle["base"]
-        _tax_scen = _tax_bundle["scenarios"]
-        _tax_paths = _tax_bundle["paths"]
-        _tax_verdict = _tax_bundle["verdict"]
-        _tax_margin = _tax_base.get("marginal") or {}
-        _tax_room = _tax_margin.get("room_to_next")
-        _tax_room_txt = (
-            ret_format_money(float(_tax_room))
-            if _tax_room is not None
-            else "top bracket"
-        )
-        _tax_eff = float(_tax_base.get("effective_rate_on_taxable") or 0.0)
-
-        st.markdown(
-            f"""
-<div style="border-radius:16px;padding:1.05rem 1.15rem 0.95rem;
-  background:linear-gradient(160deg,#f7f9fc 0%,#eef3f8 100%);
-  border:1px solid #d7dee8;box-shadow:0 1px 2px rgba(40,55,80,0.04);
-  margin:0.35rem 0 1rem 0;">
-  <div style="font-size:0.78rem;font-weight:650;letter-spacing:0.03em;
-    text-transform:uppercase;color:#5b6575;">2026 MFJ snapshot</div>
-  <div style="font-size:1.55rem;font-weight:750;color:#1f2937;
-    letter-spacing:-0.02em;line-height:1.15;margin-top:0.2rem;">
-    {_ret_dollar_html(_tax_margin.get('label') or '—')} marginal
-    · {_ret_dollar_html(_tax_room_txt)} room
-  </div>
-  <div style="color:#3a4254;margin-top:0.35rem;font-size:0.9rem;">
-    Extra Roth dollars first cost about
-    {_ret_dollar_html(ret_format_pct(float(_tax_margin.get('rate') or 0)))}
-    federal (FL state {_ret_dollar_html('$0')}).
-  </div>
-  <div style="margin-top:0.55rem;">
-    <span style="display:inline-block;padding:0.2rem 0.55rem;margin:0.15rem 0.35rem 0.15rem 0;
-      border-radius:999px;background:#fff;border:1px solid #d1d5db;font-size:0.78rem;font-weight:600;color:#475569;">
-      AGI proxy {_ret_dollar_html(ret_format_money(float(_tax_base['agi_proxy'])))}
-    </span>
-    <span style="display:inline-block;padding:0.2rem 0.55rem;margin:0.15rem 0.35rem 0.15rem 0;
-      border-radius:999px;background:#fff;border:1px solid #d1d5db;font-size:0.78rem;font-weight:600;color:#475569;">
-      Taxable {_ret_dollar_html(ret_format_money(float(_tax_base['taxable_proxy'])))}
-    </span>
-    <span style="display:inline-block;padding:0.2rem 0.55rem;margin:0.15rem 0;
-      border-radius:999px;background:#fff;border:1px solid #d1d5db;font-size:0.78rem;font-weight:600;color:#475569;">
-      Effective {_ret_dollar_html(ret_format_pct(_tax_eff))}
-    </span>
-  </div>
-  <div style="font-size:0.75rem;color:#6b7280;margin-top:0.55rem;">
-    Florida · state income tax {_ret_dollar_html('$0')} · estimate only (no CTC / SE tax in this layer).
-  </div>
-</div>
-            """,
-            unsafe_allow_html=True,
+        st.caption(
+            _md(
+                "MFJ 2026 planning estimate · Florida state income tax **$0**. "
+                "Does not change Floor / Comfort / Life runway math. "
+                "BrokerageLink stays pre-tax until you actually convert."
+            )
         )
 
-        st.markdown("#### Paths")
-        st.caption(_md("Three choices — tap a card, then read the simple table below."))
-
-        if "ret_tax_path_id" not in st.session_state:
-            st.session_state.ret_tax_path_id = "A"
-
-        _paths_ui = list(_tax_paths) if _tax_paths else [
-            {
-                "id": "A",
-                "title": "Path A — Leave as-is",
-                "subtitle": "No Roth move this year",
-                "blurb": (
-                    "Leave BrokerageLink pre-tax this year — finish the second mortgage "
-                    "before paying tax to convert."
-                ),
-            },
-            {
-                "id": "B",
-                "title": "Path B — Move some to Roth",
-                "subtitle": "See the extra tax this year",
-                "blurb": (
-                    "Optionally move some pre-tax 401k (workplace retirement) into Roth "
-                    "and see the extra federal tax this year."
-                ),
-            },
-            {
-                "id": "C",
-                "title": "Path C — Mega backdoor",
-                "subtitle": "Mega backdoor: AVAILABLE",
-                "blurb": (
-                    "Grow future paycheck dollars as Roth. Not the same as converting "
-                    "today’s BrokerageLink balance."
-                ),
-            },
-        ]
-        # Ensure three lanes with stable A/B/C ids
-        while len(_paths_ui) < 3:
-            _paths_ui.append({"id": ("A", "B", "C")[len(_paths_ui)], "title": f"Path {('A','B','C')[len(_paths_ui)]}", "subtitle": "", "blurb": ""})
-
-        _path_cols = st.columns(3)
-        for _i, _p in enumerate(_paths_ui[:3]):
-            _pid = str(_p.get("id") or _p.get("key") or ("A", "B", "C")[_i])
-            _selected = str(st.session_state.ret_tax_path_id).upper() == _pid.upper()
-            if _selected:
-                _border = "2px solid #22c55e"
-                _bg = "linear-gradient(160deg, #e8f8ef 0%, #f4fcf7 100%)"
-            else:
-                _border = "1px solid #d7dee8"
-                _bg = "linear-gradient(160deg, #f7f9fc 0%, #eef3f8 100%)"
-            _title_h = _ret_dollar_html(str(_p.get("title") or f"Path {_pid}"))
-            _sub_h = _ret_dollar_html(str(_p.get("subtitle") or ""))
-            _blurb_h = _ret_dollar_html(str(_p.get("blurb") or ""))
-            with _path_cols[_i]:
-                st.markdown(
-                    f"""
-<div style="border-radius:16px;padding:1rem 1.05rem 0.9rem;min-height:11.5rem;
-  background:{_bg};border:{_border};
-  box-shadow:0 1px 2px rgba(40,55,80,0.04);
-  display:flex;flex-direction:column;gap:0.28rem;">
-  <div style="font-size:0.95rem;font-weight:750;color:#1f2937;letter-spacing:-0.01em;">
-    {_title_h}
-  </div>
-  <div style="font-size:0.72rem;font-weight:600;color:#6b7280;margin-top:0.1rem;">
-    {_sub_h}
-  </div>
-  <div style="font-size:0.78rem;color:#6b7280;margin-top:0.25rem;line-height:1.35;">
-    {_blurb_h}
-  </div>
-</div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                if st.button(
-                    f"Select {_pid}" if not _selected else f"Selected · {_pid}",
-                    key=f"ret_tax_path_btn_{_pid}",
-                    use_container_width=True,
-                    type="primary" if _selected else "secondary",
-                ):
-                    st.session_state.ret_tax_path_id = _pid
-                    st.rerun()
-
-        _sel_id = str(st.session_state.get("ret_tax_path_id") or "A")
-        _sel_path = None
-        for _p in _paths_ui:
-            _pid = str(_p.get("id") or _p.get("key") or _p.get("title") or "")
-            if _pid.upper() == _sel_id.upper():
-                _sel_path = _p
-                break
-        if _sel_path is None and _paths_ui:
-            _sel_path = _paths_ui[0]
-            _sel_id = str(_sel_path.get("id") or "A")
-
-        _sel_upper = (
-            f"{_sel_path.get('title') or ''} {_sel_path.get('subtitle') or ''} {_sel_id}"
-        ).upper()
-        _is_a = (
-            "STAY PRE-TAX" in _sel_upper
-            or "LEAVE AS-IS" in _sel_upper
-            or _sel_upper.startswith("PATH A")
-            or _sel_id in ("A", "a", "stay")
-        )
-        _is_b = (
-            "CONVERSION" in _sel_upper
-            or "CONTROLLED" in _sel_upper
-            or "MOVE SOME TO ROTH" in _sel_upper
-            or _sel_upper.startswith("PATH B")
-            or _sel_id in ("B", "b", "convert")
-        )
-        _is_c = (
-            "MEGA" in _sel_upper
-            or "BACKDOOR" in _sel_upper
-            or _sel_upper.startswith("PATH C")
-            or _sel_id in ("C", "c", "mega")
-        )
-        # Fallback by id letter if titles differ
-        if not (_is_a or _is_b or _is_c):
-            _u = _sel_id.upper()
-            _is_a, _is_b, _is_c = (_u == "A", _u == "B", _u == "C")
-
-        if _is_a:
-            _bl_bal_a = float(_tax_base.get("brokeragelink_balance") or 515916.24)
-            _bracket_lbl = _tax_margin.get("label") or "22%"
-            _room_txt_a = (
+        try:
+            _tax_bundle = tax_layer_bundle()
+            _tax_base = _tax_bundle["base"]
+            _tax_scen = _tax_bundle["scenarios"]
+            _tax_paths = _tax_bundle["paths"]
+            _tax_verdict = _tax_bundle["verdict"]
+            _tax_margin = _tax_base.get("marginal") or {}
+            _tax_room = _tax_margin.get("room_to_next")
+            _tax_room_txt = (
                 ret_format_money(float(_tax_room))
                 if _tax_room is not None
                 else "top bracket"
             )
-            st.markdown("#### Leave retirement money as-is this year")
-            st.caption(
-                _md(
-                    "You are **not** turning BrokerageLink (your 401k investment window) into "
-                    "Roth (after-tax growth that can come out tax-free later). "
-                    "No extra tax bill this year from conversions."
-                )
+            _tax_eff = float(_tax_base.get("effective_rate_on_taxable") or 0.0)
+
+            st.markdown(
+                f"""
+    <div style="border-radius:16px;padding:1.05rem 1.15rem 0.95rem;
+      background:linear-gradient(160deg,#f7f9fc 0%,#eef3f8 100%);
+      border:1px solid #d7dee8;box-shadow:0 1px 2px rgba(40,55,80,0.04);
+      margin:0.35rem 0 1rem 0;">
+      <div style="font-size:0.78rem;font-weight:650;letter-spacing:0.03em;
+        text-transform:uppercase;color:#5b6575;">2026 MFJ snapshot</div>
+      <div style="font-size:1.55rem;font-weight:750;color:#1f2937;
+        letter-spacing:-0.02em;line-height:1.15;margin-top:0.2rem;">
+        {_ret_dollar_html(_tax_margin.get('label') or '—')} marginal
+        · {_ret_dollar_html(_tax_room_txt)} room
+      </div>
+      <div style="color:#3a4254;margin-top:0.35rem;font-size:0.9rem;">
+        Extra Roth dollars first cost about
+        {_ret_dollar_html(ret_format_pct(float(_tax_margin.get('rate') or 0)))}
+        federal (FL state {_ret_dollar_html('$0')}).
+      </div>
+      <div style="margin-top:0.55rem;">
+        <span style="display:inline-block;padding:0.2rem 0.55rem;margin:0.15rem 0.35rem 0.15rem 0;
+          border-radius:999px;background:#fff;border:1px solid #d1d5db;font-size:0.78rem;font-weight:600;color:#475569;">
+          AGI proxy {_ret_dollar_html(ret_format_money(float(_tax_base['agi_proxy'])))}
+        </span>
+        <span style="display:inline-block;padding:0.2rem 0.55rem;margin:0.15rem 0.35rem 0.15rem 0;
+          border-radius:999px;background:#fff;border:1px solid #d1d5db;font-size:0.78rem;font-weight:600;color:#475569;">
+          Taxable {_ret_dollar_html(ret_format_money(float(_tax_base['taxable_proxy'])))}
+        </span>
+        <span style="display:inline-block;padding:0.2rem 0.55rem;margin:0.15rem 0;
+          border-radius:999px;background:#fff;border:1px solid #d1d5db;font-size:0.78rem;font-weight:600;color:#475569;">
+          Effective {_ret_dollar_html(ret_format_pct(_tax_eff))}
+        </span>
+      </div>
+      <div style="font-size:0.75rem;color:#6b7280;margin-top:0.55rem;">
+        Florida · state income tax {_ret_dollar_html('$0')} · estimate only (no CTC / SE tax in this layer).
+      </div>
+    </div>
+                """,
+                unsafe_allow_html=True,
             )
-            _path_a_rows = [
+
+            st.markdown("#### Paths")
+            st.caption(_md("Three choices — tap a card, then read the simple table below."))
+
+            if "ret_tax_path_id" not in st.session_state:
+                st.session_state.ret_tax_path_id = "A"
+
+            _paths_ui = list(_tax_paths) if _tax_paths else [
                 {
-                    "What": "BrokerageLink stays pre-tax",
-                    "In plain English": (
-                        "Your workplace retirement account (401k) keeps growing as pre-tax money — "
-                        "you pay tax later when you withdraw, not now."
-                    ),
-                    "Your numbers": ret_format_money(_bl_bal_a),
-                },
-                {
-                    "What": "Extra tax this year",
-                    "In plain English": (
-                        "No Roth conversion this year, so there is no conversion tax bill from this path."
-                    ),
-                    "Your numbers": ret_format_money(0.0),
-                },
-                {
-                    "What": "Unused room in current tax bracket",
-                    "In plain English": (
-                        "How much more taxable income you could take before jumping to the next "
-                        f"federal tax bracket ({_bracket_lbl} now)."
-                    ),
-                    "Your numbers": (
-                        f"{_room_txt_a} still in {_bracket_lbl}"
-                        if _tax_room is not None
-                        else _room_txt_a
+                    "id": "A",
+                    "title": "Path A — Leave as-is",
+                    "subtitle": "No Roth move this year",
+                    "blurb": (
+                        "Leave BrokerageLink pre-tax this year — finish the second mortgage "
+                        "before paying tax to convert."
                     ),
                 },
                 {
-                    "What": "Best reason",
-                    "In plain English": (
-                        "Finish paying the second mortgage (HomeLoan) first, and avoid a cash tax bill this year."
+                    "id": "B",
+                    "title": "Path B — Move some to Roth",
+                    "subtitle": "See the extra tax this year",
+                    "blurb": (
+                        "Optionally move some pre-tax 401k (workplace retirement) into Roth "
+                        "and see the extra federal tax this year."
                     ),
-                    "Your numbers": "Finish Home equity / avoid cash tax",
+                },
+                {
+                    "id": "C",
+                    "title": "Path C — Mega backdoor",
+                    "subtitle": "Mega backdoor: AVAILABLE",
+                    "blurb": (
+                        "Grow future paycheck dollars as Roth. Not the same as converting "
+                        "today’s BrokerageLink balance."
+                    ),
                 },
             ]
-            st.dataframe(
-                pd.DataFrame(_path_a_rows),
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Your numbers": st.column_config.Column("Your numbers", alignment="right"),
-                },
-            )
+            # Ensure three lanes with stable A/B/C ids
+            while len(_paths_ui) < 3:
+                _paths_ui.append({"id": ("A", "B", "C")[len(_paths_ui)], "title": f"Path {('A','B','C')[len(_paths_ui)]}", "subtitle": "", "blurb": ""})
 
-        elif _is_b:
-            st.markdown("#### Path B — what if we move some to Roth?")
-            st.caption(
-                _md(
-                    "Moving pre-tax 401k (workplace retirement) → Roth means you pay tax **now** "
-                    "so growth can be tax-free later. "
-                    "**Extra tax** = how much more federal tax this year. "
-                    "**Tax cost per Roth $** ≈ how many cents of tax for each $1 moved. "
-                    f"Full 401k balance uses live BrokerageLink "
-                    f"**{ret_format_money(float(_tax_base.get('brokeragelink_balance') or 0))}**."
-                )
-            )
+            _path_cols = st.columns(3)
+            for _i, _p in enumerate(_paths_ui[:3]):
+                _pid = str(_p.get("id") or _p.get("key") or ("A", "B", "C")[_i])
+                _selected = str(st.session_state.ret_tax_path_id).upper() == _pid.upper()
+                if _selected:
+                    _border = "2px solid #22c55e"
+                    _bg = "linear-gradient(160deg, #e8f8ef 0%, #f4fcf7 100%)"
+                else:
+                    _border = "1px solid #d7dee8"
+                    _bg = "linear-gradient(160deg, #f7f9fc 0%, #eef3f8 100%)"
+                _title_h = _ret_dollar_html(str(_p.get("title") or f"Path {_pid}"))
+                _sub_h = _ret_dollar_html(str(_p.get("subtitle") or ""))
+                _blurb_h = _ret_dollar_html(str(_p.get("blurb") or ""))
+                with _path_cols[_i]:
+                    st.markdown(
+                        f"""
+    <div style="border-radius:16px;padding:1rem 1.05rem 0.9rem;min-height:11.5rem;
+      background:{_bg};border:{_border};
+      box-shadow:0 1px 2px rgba(40,55,80,0.04);
+      display:flex;flex-direction:column;gap:0.28rem;">
+      <div style="font-size:0.95rem;font-weight:750;color:#1f2937;letter-spacing:-0.01em;">
+        {_title_h}
+      </div>
+      <div style="font-size:0.72rem;font-weight:600;color:#6b7280;margin-top:0.1rem;">
+        {_sub_h}
+      </div>
+      <div style="font-size:0.78rem;color:#6b7280;margin-top:0.25rem;line-height:1.35;">
+        {_blurb_h}
+      </div>
+    </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    if st.button(
+                        f"Select {_pid}" if not _selected else f"Selected · {_pid}",
+                        key=f"ret_tax_path_btn_{_pid}",
+                        use_container_width=True,
+                        type="primary" if _selected else "secondary",
+                    ):
+                        st.session_state.ret_tax_path_id = _pid
+                        st.rerun()
 
-            _tax_rows = []
-            for _r in _tax_scen:
-                _room = _r.get("room_left")
-                _tax_rows.append(
-                    {
-                        "What if": (
-                            "Full 401k balance"
-                            if _r["label"] == "full_401k_balance"
-                            else (
-                                "Fill current bracket"
-                                if _r["label"] == "fill_bracket"
-                                else (
-                                    "Jump one bracket"
-                                    if _r["label"] == "jump_one_bracket"
-                                    else _r["label"]
-                                )
-                            )
-                        ),
-                        "Move to Roth": ret_format_money(float(_r["convert"])),
-                        "New taxable income": ret_format_money(float(_r["new_taxable"])),
-                        "Tax bracket before": _r["bracket_before"],
-                        "Tax bracket after": _r["bracket_after"],
-                        "Extra tax this year": ret_format_money(float(_r["extra_tax"])),
-                        "Tax cost per Roth $": (
-                            ret_format_pct(float(_r["tax_per_roth_dollar"]))
-                            if float(_r["convert"]) > 0
-                            else "—"
-                        ),
-                        "Room left in bracket": (
-                            ret_format_money(float(_room))
-                            if _room is not None
-                            else "—"
-                        ),
-                    }
-                )
-            _tax_df = pd.DataFrame(_tax_rows)
-            _tax_cfg = {
-                c: st.column_config.Column(c, alignment="right")
-                for c in (
-                    "Move to Roth",
-                    "New taxable income",
-                    "Extra tax this year",
-                    "Tax cost per Roth $",
-                    "Room left in bracket",
-                )
-            }
-            st.dataframe(
-                _tax_df,
-                use_container_width=True,
-                hide_index=True,
-                column_config=_tax_cfg,
+            _sel_id = str(st.session_state.get("ret_tax_path_id") or "A")
+            _sel_path = None
+            for _p in _paths_ui:
+                _pid = str(_p.get("id") or _p.get("key") or _p.get("title") or "")
+                if _pid.upper() == _sel_id.upper():
+                    _sel_path = _p
+                    break
+            if _sel_path is None and _paths_ui:
+                _sel_path = _paths_ui[0]
+                _sel_id = str(_sel_path.get("id") or "A")
+
+            _sel_upper = (
+                f"{_sel_path.get('title') or ''} {_sel_path.get('subtitle') or ''} {_sel_id}"
+            ).upper()
+            _is_a = (
+                "STAY PRE-TAX" in _sel_upper
+                or "LEAVE AS-IS" in _sel_upper
+                or _sel_upper.startswith("PATH A")
+                or _sel_id in ("A", "a", "stay")
             )
-            with st.expander("How the taxable baseline is built"):
-                st.markdown(
+            _is_b = (
+                "CONVERSION" in _sel_upper
+                or "CONTROLLED" in _sel_upper
+                or "MOVE SOME TO ROTH" in _sel_upper
+                or _sel_upper.startswith("PATH B")
+                or _sel_id in ("B", "b", "convert")
+            )
+            _is_c = (
+                "MEGA" in _sel_upper
+                or "BACKDOOR" in _sel_upper
+                or _sel_upper.startswith("PATH C")
+                or _sel_id in ("C", "c", "mega")
+            )
+            # Fallback by id letter if titles differ
+            if not (_is_a or _is_b or _is_c):
+                _u = _sel_id.upper()
+                _is_a, _is_b, _is_c = (_u == "A", _u == "B", _u == "C")
+
+            if _is_a:
+                _bl_bal_a = float(_tax_base.get("brokeragelink_balance") or 515916.24)
+                _bracket_lbl = _tax_margin.get("label") or "22%"
+                _room_txt_a = (
+                    ret_format_money(float(_tax_room))
+                    if _tax_room is not None
+                    else "top bracket"
+                )
+                st.markdown("#### Leave retirement money as-is this year")
+                st.caption(
                     _md(
-                        f"- Alex annualized gross: **{ret_format_money(float(_tax_base['alex_annualized_gross_base']))}** "
-                        f"(year-to-date × 26/{int(_tax_base['pays_to_date_assumed'])})\n"
-                        f"- Jordan flat: **{ret_format_money(float(_tax_base['secondary_flat_annual']))}**\n"
-                        f"- Pretax 401k annualized: **{ret_format_money(float(_tax_base['pretax_401k_annualized']))}** "
-                        f"(year-to-date × 26/pays)\n"
-                        f"- AGI proxy (rough yearly income for tax planning): "
-                        f"**{ret_format_money(float(_tax_base['agi_proxy']))}**\n"
-                        f"- Standard deduction 2026 married filing jointly: "
-                        f"**{ret_format_money(float(_tax_base['standard_deduction']))}**\n"
-                        f"- Taxable income proxy: **{ret_format_money(float(_tax_base['taxable_proxy']))}**\n\n"
-                        + "\n".join(f"- _{n}_" for n in (_tax_base.get("method_notes") or []))
+                        "You are **not** turning BrokerageLink (your 401k investment window) into "
+                        "Roth (after-tax growth that can come out tax-free later). "
+                        "No extra tax bill this year from conversions."
+                    )
+                )
+                _path_a_rows = [
+                    {
+                        "What": "BrokerageLink stays pre-tax",
+                        "In plain English": (
+                            "Your workplace retirement account (401k) keeps growing as pre-tax money — "
+                            "you pay tax later when you withdraw, not now."
+                        ),
+                        "Your numbers": ret_format_money(_bl_bal_a),
+                    },
+                    {
+                        "What": "Extra tax this year",
+                        "In plain English": (
+                            "No Roth conversion this year, so there is no conversion tax bill from this path."
+                        ),
+                        "Your numbers": ret_format_money(0.0),
+                    },
+                    {
+                        "What": "Unused room in current tax bracket",
+                        "In plain English": (
+                            "How much more taxable income you could take before jumping to the next "
+                            f"federal tax bracket ({_bracket_lbl} now)."
+                        ),
+                        "Your numbers": (
+                            f"{_room_txt_a} still in {_bracket_lbl}"
+                            if _tax_room is not None
+                            else _room_txt_a
+                        ),
+                    },
+                    {
+                        "What": "Best reason",
+                        "In plain English": (
+                            "Finish paying the second mortgage (HomeLoan) first, and avoid a cash tax bill this year."
+                        ),
+                        "Your numbers": "Finish Home equity / avoid cash tax",
+                    },
+                ]
+                st.dataframe(
+                    pd.DataFrame(_path_a_rows),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Your numbers": st.column_config.Column("Your numbers", alignment="right"),
+                    },
+                )
+
+            elif _is_b:
+                st.markdown("#### Path B — what if we move some to Roth?")
+                st.caption(
+                    _md(
+                        "Moving pre-tax 401k (workplace retirement) → Roth means you pay tax **now** "
+                        "so growth can be tax-free later. "
+                        "**Extra tax** = how much more federal tax this year. "
+                        "**Tax cost per Roth $** ≈ how many cents of tax for each $1 moved. "
+                        f"Full 401k balance uses live BrokerageLink "
+                        f"**{ret_format_money(float(_tax_base.get('brokeragelink_balance') or 0))}**."
                     )
                 )
 
-        else:  # Path C mega backdoor
-            st.markdown("#### Path C — grow NEW money as Roth (mega backdoor)")
-            _plan_feats = load_plan_features()
-            _card = _plan_feats.get("card_copy") or {}
-            _feats = _plan_feats.get("features") or {}
-            _bl_bal = float(_tax_base.get("brokeragelink_balance") or 515916.24)
-            st.success(
-                _md(
-                    f"**{_card.get('path_c_headline') or 'Mega backdoor: AVAILABLE'}** — "
-                    f"{_card.get('mega_status') or 'Yes — after-tax + in-plan Roth conversion (SPD Jan 2026)'}"
+                _tax_rows = []
+                for _r in _tax_scen:
+                    _room = _r.get("room_left")
+                    _tax_rows.append(
+                        {
+                            "What if": (
+                                "Full 401k balance"
+                                if _r["label"] == "full_401k_balance"
+                                else (
+                                    "Fill current bracket"
+                                    if _r["label"] == "fill_bracket"
+                                    else (
+                                        "Jump one bracket"
+                                        if _r["label"] == "jump_one_bracket"
+                                        else _r["label"]
+                                    )
+                                )
+                            ),
+                            "Move to Roth": ret_format_money(float(_r["convert"])),
+                            "New taxable income": ret_format_money(float(_r["new_taxable"])),
+                            "Tax bracket before": _r["bracket_before"],
+                            "Tax bracket after": _r["bracket_after"],
+                            "Extra tax this year": ret_format_money(float(_r["extra_tax"])),
+                            "Tax cost per Roth $": (
+                                ret_format_pct(float(_r["tax_per_roth_dollar"]))
+                                if float(_r["convert"]) > 0
+                                else "—"
+                            ),
+                            "Room left in bracket": (
+                                ret_format_money(float(_room))
+                                if _room is not None
+                                else "—"
+                            ),
+                        }
+                    )
+                _tax_df = pd.DataFrame(_tax_rows)
+                _tax_cfg = {
+                    c: st.column_config.Column(c, alignment="right")
+                    for c in (
+                        "Move to Roth",
+                        "New taxable income",
+                        "Extra tax this year",
+                        "Tax cost per Roth $",
+                        "Room left in bracket",
+                    )
+                }
+                st.dataframe(
+                    _tax_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config=_tax_cfg,
                 )
-            )
+                with st.expander("How the taxable baseline is built"):
+                    st.markdown(
+                        _md(
+                            f"- Alex annualized gross: **{ret_format_money(float(_tax_base['alex_annualized_gross_base']))}** "
+                            f"(year-to-date × 26/{int(_tax_base['pays_to_date_assumed'])})\n"
+                            f"- Jordan flat: **{ret_format_money(float(_tax_base['secondary_flat_annual']))}**\n"
+                            f"- Pretax 401k annualized: **{ret_format_money(float(_tax_base['pretax_401k_annualized']))}** "
+                            f"(year-to-date × 26/pays)\n"
+                            f"- AGI proxy (rough yearly income for tax planning): "
+                            f"**{ret_format_money(float(_tax_base['agi_proxy']))}**\n"
+                            f"- Standard deduction 2026 married filing jointly: "
+                            f"**{ret_format_money(float(_tax_base['standard_deduction']))}**\n"
+                            f"- Taxable income proxy: **{ret_format_money(float(_tax_base['taxable_proxy']))}**\n\n"
+                            + "\n".join(f"- _{n}_" for n in (_tax_base.get("method_notes") or []))
+                        )
+                    )
+
+            else:  # Path C mega backdoor
+                st.markdown("#### Path C — grow NEW money as Roth (mega backdoor)")
+                _plan_feats = load_plan_features()
+                _card = _plan_feats.get("card_copy") or {}
+                _feats = _plan_feats.get("features") or {}
+                _bl_bal = float(_tax_base.get("brokeragelink_balance") or 515916.24)
+                st.success(
+                    _md(
+                        f"**{_card.get('path_c_headline') or 'Mega backdoor: AVAILABLE'}** — "
+                        f"{_card.get('mega_status') or 'Yes — after-tax + in-plan Roth conversion (SPD Jan 2026)'}"
+                    )
+                )
+                st.caption(
+                    _md(
+                        "This is about **future paycheck dollars** you put in after-tax, then move to Roth "
+                        "(after-tax growth that can come out tax-free later). "
+                        "It is **not** turning today’s big pre-tax BrokerageLink pile into Roth "
+                        "(that’s Path B)."
+                    )
+                )
+                _after_tax_status = (
+                    (_feats.get("after_tax_non_roth_contributions") or {}).get("status") or "Yes"
+                )
+                _in_plan_status = (
+                    (_feats.get("in_plan_roth_conversion") or {}).get("status") or "Yes"
+                )
+                _match_status = (
+                    (_feats.get("employer_match") or {}).get("status") or "100% of first 6%"
+                )
+                if _match_status.lower() in ("yes", "available"):
+                    _match_status = "100% of first 6%"
+                _path_c_rows = [
+                    {
+                        "Step": "1. Put after-tax dollars in the 401k",
+                        "In plain English": (
+                            "Money already taxed from your paycheck goes into the workplace "
+                            "retirement account (401k)."
+                        ),
+                        "Status": (
+                            f"{_after_tax_status} (SPD)"
+                            if "SPD" not in str(_after_tax_status).upper()
+                            else _after_tax_status
+                        ),
+                    },
+                    {
+                        "Step": "2. Move those dollars to Roth inside the plan (or to a Roth IRA)",
+                        "In plain English": (
+                            "Usually little extra tax if you move them soon after contributing."
+                        ),
+                        "Status": _in_plan_status,
+                    },
+                    {
+                        "Step": "3. Keep today’s BrokerageLink pre-tax pile alone",
+                        "In plain English": (
+                            "Do not mix this path with converting the existing balance "
+                            f"({ret_format_money(_bl_bal)} still pre-tax)."
+                        ),
+                        "Status": "Separate",
+                    },
+                    {
+                        "Step": "4. Employer match",
+                        "In plain English": (
+                            "Company adds money (taxed later when withdrawn)."
+                        ),
+                        "Status": _match_status,
+                    },
+                ]
+                st.dataframe(
+                    pd.DataFrame(_path_c_rows),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                st.markdown(
+                    _md(
+                        "**Do**\n"
+                        "- Use future paycheck after-tax dollars, then move them to Roth soon.\n"
+                        "- Keep today’s BrokerageLink pre-tax pile on its own track.\n\n"
+                        "**Don’t**\n"
+                        "- Treat the existing BrokerageLink balance as Roth.\n"
+                        "- Mix this path with Path B (moving today’s big pre-tax balance to Roth)."
+                    )
+                )
+                with st.expander("SPD proof quotes (short)", expanded=False):
+                    _proofs = []
+                    for _key, _label in (
+                        ("after_tax_non_roth_contributions", "After-tax"),
+                        ("in_plan_roth_conversion", "In-plan Roth conversion"),
+                        ("in_service_withdrawal_after_tax_to_roth_ira", "After-tax → Roth IRA"),
+                        ("employer_match", "Employer match"),
+                        ("caps_waiting_max_deferrals_first", "Deferral spillover → after-tax"),
+                    ):
+                        _p = (_feats.get(_key) or {}).get("proof")
+                        if _p:
+                            _proofs.append(f"**{_label}:** _{_p}_")
+                    st.markdown(_md("\n\n".join(_proofs)))
+                    _src = _plan_feats.get("source") or {}
+                    st.caption(
+                        f"Source: {_src.get('document', 'SPD')} · effective {_src.get('effective', '?')} "
+                        f"· as of {_src.get('as_of', '?')}"
+                    )
+
+            st.markdown("#### Worth it?")
             st.caption(
                 _md(
-                    "This is about **future paycheck dollars** you put in after-tax, then move to Roth "
-                    "(after-tax growth that can come out tax-free later). "
-                    "It is **not** turning today’s big pre-tax BrokerageLink pile into Roth "
-                    "(that’s Path B)."
+                    "Right now we lean **no** on big Roth moves until the second mortgage is paid down."
                 )
-            )
-            _after_tax_status = (
-                (_feats.get("after_tax_non_roth_contributions") or {}).get("status") or "Yes"
-            )
-            _in_plan_status = (
-                (_feats.get("in_plan_roth_conversion") or {}).get("status") or "Yes"
-            )
-            _match_status = (
-                (_feats.get("employer_match") or {}).get("status") or "100% of first 6%"
-            )
-            if _match_status.lower() in ("yes", "available"):
-                _match_status = "100% of first 6%"
-            _path_c_rows = [
-                {
-                    "Step": "1. Put after-tax dollars in the 401k",
-                    "In plain English": (
-                        "Money already taxed from your paycheck goes into the workplace "
-                        "retirement account (401k)."
-                    ),
-                    "Status": (
-                        f"{_after_tax_status} (SPD)"
-                        if "SPD" not in str(_after_tax_status).upper()
-                        else _after_tax_status
-                    ),
-                },
-                {
-                    "Step": "2. Move those dollars to Roth inside the plan (or to a Roth IRA)",
-                    "In plain English": (
-                        "Usually little extra tax if you move them soon after contributing."
-                    ),
-                    "Status": _in_plan_status,
-                },
-                {
-                    "Step": "3. Keep today’s BrokerageLink pre-tax pile alone",
-                    "In plain English": (
-                        "Do not mix this path with converting the existing balance "
-                        f"({ret_format_money(_bl_bal)} still pre-tax)."
-                    ),
-                    "Status": "Separate",
-                },
-                {
-                    "Step": "4. Employer match",
-                    "In plain English": (
-                        "Company adds money (taxed later when withdrawn)."
-                    ),
-                    "Status": _match_status,
-                },
-            ]
-            st.dataframe(
-                pd.DataFrame(_path_c_rows),
-                use_container_width=True,
-                hide_index=True,
             )
             st.markdown(
-                _md(
-                    "**Do**\n"
-                    "- Use future paycheck after-tax dollars, then move them to Roth soon.\n"
-                    "- Keep today’s BrokerageLink pre-tax pile on its own track.\n\n"
-                    "**Don’t**\n"
-                    "- Treat the existing BrokerageLink balance as Roth.\n"
-                    "- Mix this path with Path B (moving today’s big pre-tax balance to Roth)."
-                )
+                f"""
+    <div style="border-radius:16px;padding:1rem 1.05rem 0.9rem;
+      background:linear-gradient(160deg,#f7f4ef 0%,#fbf8f3 100%);
+      border:1px solid #e2d5c3;margin:0.25rem 0 0.75rem 0;">
+      <div style="font-size:1.05rem;font-weight:750;color:#7a4a1e;">
+        {_tax_verdict.get('headline') or _tax_verdict.get('verdict')}
+      </div>
+    </div>
+                """,
+                unsafe_allow_html=True,
             )
-            with st.expander("SPD proof quotes (short)", expanded=False):
-                _proofs = []
-                for _key, _label in (
-                    ("after_tax_non_roth_contributions", "After-tax"),
-                    ("in_plan_roth_conversion", "In-plan Roth conversion"),
-                    ("in_service_withdrawal_after_tax_to_roth_ira", "After-tax → Roth IRA"),
-                    ("employer_match", "Employer match"),
-                    ("caps_waiting_max_deferrals_first", "Deferral spillover → after-tax"),
-                ):
-                    _p = (_feats.get(_key) or {}).get("proof")
-                    if _p:
-                        _proofs.append(f"**{_label}:** _{_p}_")
-                st.markdown(_md("\n\n".join(_proofs)))
-                _src = _plan_feats.get("source") or {}
-                st.caption(
-                    f"Source: {_src.get('document', 'SPD')} · effective {_src.get('effective', '?')} "
-                    f"· as of {_src.get('as_of', '?')}"
-                )
+            for _b in (_tax_verdict.get("bullets") or [])[:3]:
+                st.markdown(f"- {_md(_b)}")
 
-        st.markdown("#### Worth it?")
-        st.caption(
-            _md(
-                "Right now we lean **no** on big Roth moves until the second mortgage is paid down."
-            )
-        )
-        st.markdown(
-            f"""
-<div style="border-radius:16px;padding:1rem 1.05rem 0.9rem;
-  background:linear-gradient(160deg,#f7f4ef 0%,#fbf8f3 100%);
-  border:1px solid #e2d5c3;margin:0.25rem 0 0.75rem 0;">
-  <div style="font-size:1.05rem;font-weight:750;color:#7a4a1e;">
-    {_tax_verdict.get('headline') or _tax_verdict.get('verdict')}
-  </div>
-</div>
-            """,
-            unsafe_allow_html=True,
-        )
-        for _b in (_tax_verdict.get("bullets") or [])[:3]:
-            st.markdown(f"- {_md(_b)}")
-
-    except Exception as _tax_exc:
-        st.warning(f"Tax layer unavailable: {_tax_exc}")
+        except Exception as _tax_exc:
+            st.warning(f"Tax layer unavailable: {_tax_exc}")
 
 
 elif page == "Rules":
@@ -7437,10 +7638,81 @@ full-horizon metrics. Duplicate a scenario to tweak quickly.
     cdf = pd.DataFrame(comp_rows)
     money_cols = [c for c in cdf.columns if "ending" in c.lower() or "min" in c.lower()]
     fmt = {c: "${:,.2f}" for c in money_cols}
+
     st.dataframe(cdf.style.format(fmt), use_container_width=True)
+
+    # --- Actual vs forecast (regression-sensitive under scenario re-expansion) ---
+    st.subheader("Actual vs forecast")
+    st.caption(
+        "When bank actuals exist for a date+category, they replace the forecast line. "
+        "Scenario rule overrides re-expand rules but must **not** resurrect the overridden forecast."
+    )
+    _avf_months = sorted({(a.get("date") or "")[:7] for a in actuals if a.get("date")}, reverse=True)
+    if not _avf_months:
+        st.info("No actuals yet — import a bank CSV to compare actual vs forecast under a scenario.")
+    else:
+        _avf_month = st.selectbox("Month", _avf_months, key="scenarios_avf_month")
+        _avf_sc_name = st.selectbox(
+            "Scenario (Baseline = no deltas)",
+            ["Baseline"] + [s["name"] for s in scenarios],
+            key="scenarios_avf_scenario",
+        )
+        _avf_deltas = []
+        if _avf_sc_name != "Baseline":
+            _sc = next((s for s in scenarios if s["name"] == _avf_sc_name), None)
+            if _sc:
+                from engine.project import ScenarioDelta
+                _avf_deltas = [ScenarioDelta.from_dict(d) for d in (_sc.get("deltas") or [])]
+        y, mth = int(_avf_month[:4]), int(_avf_month[5:7])
+        from datetime import date as _date
+        from calendar import monthrange as _monthrange
+        _avf_start = _date(y, mth, 1)
+        _avf_end = _date(y, mth, _monthrange(y, mth)[1])
+        _avf_proj = project(
+            max(_avf_start, settings["start_date"]),
+            min(_avf_end, settings["end_date"]),
+            settings["start_balance"],
+            rules,
+            planned,
+            actuals,
+            _avf_deltas or None,
+            settings["warning_threshold"],
+            suppress_rules_through=settings.get("suppress_rules_through"),
+        )
+        rows = []
+        for day in _avf_proj["daily"]:
+            for f in day.get("flows") or []:
+                if not (day["date"].year == y and day["date"].month == mth):
+                    continue
+                rows.append(
+                    {
+                        "date": day["date"].isoformat(),
+                        "category": f.category,
+                        "label": f.label,
+                        "amount": f.amount,
+                        "source": f.source,
+                    }
+                )
+        if not rows:
+            st.info("No flows in this month for the selected scenario.")
+        else:
+            import pandas as _pd
+            _adf = _pd.DataFrame(rows)
+            st.dataframe(
+                _adf.style.format({"amount": "${:,.2f}"}),
+                use_container_width=True,
+                hide_index=True,
+                height=min(360, 70 + 28 * min(len(_adf), 12)),
+            )
+            _act = _adf[_adf["source"] == "actual"]["amount"].sum()
+            _fc = _adf[_adf["source"] != "actual"]["amount"].sum()
+            c1, c2 = st.columns(2)
+            c1.metric("Actual lines (sum)", money(_act))
+            c2.metric("Forecast/other lines (sum)", money(_fc))
 
     st.divider()
     st.subheader("Manage scenarios")
+
 
     # List + duplicate / delete
     for sc in scenarios:
@@ -7531,18 +7803,24 @@ full-horizon metrics. Duplicate a scenario to tweak quickly.
 elif page == "Import":
     st.title("Import — bank CSV → actuals")
     st.caption(
-        "Due dates learn from bank CSV/screenshots; Mortgage locked to day 11; AT&T & Water are manual."
+        "Safer workflow: preview → Merge or Replace → confirm Replace → "
+        "auto backup before destructive → change report. "
+        "Due dates learn from bank CSV; Mortgage locked to day 11; AT&T & Water are manual."
     )
     st.markdown(
         """
 Upload a bank checking CSV (columns: Details, Posting Date, Description, Amount, Type, Balance).
 Rows are stored in **actuals** with transaction **label** (Description) and Excel **category** buckets
-via keyword merchant maps. Prior imports tagged `source=bank_csv` are replaced; rules/scenarios stay.
+via keyword merchant maps. Rules/scenarios stay untouched.
 
-CLI equivalent:
+**Merge** skips duplicates (fingerprint = stable bank ID if present, else date+amount+normalized memo+source).
+**Replace** clears prior `bank_csv` rows after confirmation and a timestamped household backup.
+
+CLI:
 
 ```bash
-python scripts/import_bank_csv.py /path/to/chase.csv
+python scripts/import_bank_csv.py /path/to/chase.csv --mode merge
+python scripts/import_bank_csv.py /path/to/chase.csv --mode replace --confirm-replace
 ```
 """
     )
@@ -7559,77 +7837,135 @@ python scripts/import_bank_csv.py /path/to/chase.csv
         "/home/box/agent-data/agents/.../attachments/*.csv or any Chase export"
     )
     path_in = st.text_input("Or path on server", value="", placeholder=default_hint)
-    replace = st.checkbox("Replace previous bank_csv actuals", value=True)
 
-    if st.button("Run import", type="primary"):
-        try:
-            if uploaded is not None:
-                import io
-                raw = uploaded.getvalue().decode("utf-8-sig")
-                report = import_csv(
-                    conn, io.StringIO(raw), replace_csv_actuals=replace
-                )
-            elif path_in.strip():
-                report = import_csv(
-                    conn, path_in.strip(), replace_csv_actuals=replace
-                )
-            else:
+    def _load_csv_handle():
+        import io
+
+        if uploaded is not None:
+            raw = uploaded.getvalue().decode("utf-8-sig")
+            return io.StringIO(raw), "upload"
+        if path_in.strip():
+            return path_in.strip(), "path"
+        return None, None
+
+    preview = st.session_state.get("bank_import_preview")
+    if st.button("Preview import", type="secondary"):
+        handle, src = _load_csv_handle()
+        if handle is None:
+            st.error("Provide a file upload or server path")
+        else:
+            try:
+                preview = preview_csv_import(conn, handle)
+                st.session_state["bank_import_preview"] = preview
+                st.session_state["bank_import_source"] = src
+            except Exception as e:
+                st.error(f"Preview failed: {e}")
+                preview = None
+
+    preview = st.session_state.get("bank_import_preview")
+    if preview:
+        st.subheader("Preview")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Rows", preview["rows_parsed"])
+        c2.metric("% categorized", f"{preview['pct_categorized']}%")
+        c3.metric("New (vs DB)", preview["new_row_count"])
+        c4.metric("Duplicates", preview["duplicate_count"])
+        st.caption(
+            f"Date range **{preview.get('date_min')} → {preview.get('date_max')}** "
+            f"({preview.get('span_days')} days) · "
+            f"categorized {preview['categorized']} / uncategorized {preview['uncategorized']}"
+        )
+        if preview.get("overlap"):
+            st.warning(preview.get("overlap_note") or "Overlaps existing bank_csv history")
+        if preview.get("short_history_warning"):
+            st.warning(preview.get("short_history_message") or "Short history export")
+        if preview.get("existing_bank_csv_rows"):
+            st.caption(
+                f"Existing bank_csv in DB: **{preview['existing_bank_csv_rows']}** rows "
+                f"({preview.get('existing_date_min')} → {preview.get('existing_date_max')})"
+            )
+        mode = st.radio(
+            "Import mode",
+            ["Merge", "Replace"],
+            horizontal=True,
+            help="Merge skips duplicate fingerprints. Replace clears prior bank_csv after confirm + backup.",
+        )
+        confirm_replace = False
+        if mode == "Replace":
+            confirm_replace = st.checkbox(
+                "I understand Replace will delete existing bank_csv actuals after a backup",
+                value=False,
+            )
+
+        if st.button("Run import", type="primary"):
+            handle, src = _load_csv_handle()
+            if handle is None:
                 st.error("Provide a file upload or server path")
-                report = None
-            if report:
-                # Keep projection seam settings stable
-                db.set_setting(conn, "start_balance", "5000.00")
-                db.set_setting(conn, "start_date", "2026-09-12")
-                db.set_setting(conn, "end_date", "2029-09-12")
-                settings_now = db.get_settings(conn)
-                write_import_report(
-                    report,
-                    {
-                        "start_balance": settings_now["start_balance"],
-                        "start_date": settings_now["start_date"].isoformat(),
-                        "end_date": settings_now["end_date"].isoformat(),
-                    },
-                    Path(__file__).resolve().parent / "data" / "import_report.md",
-                )
-                st.success(
-                    f"Imported {report['rows_imported']} rows · "
-                    f"{report['pct_categorized']}% categorized · "
-                    f"{report['uncategorized']} uncategorized"
-                )
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Rows", report["rows_imported"])
-                c2.metric("% categorized", f"{report['pct_categorized']}%")
-                c3.metric("Money in", money(report["total_in"]))
-                c4.metric("Money out", money(report["total_out"]))
-                st.subheader("Top uncategorized merchants")
-                if report["top_uncategorized"]:
-                    st.dataframe(
-                        pd.DataFrame(
-                            report["top_uncategorized"], columns=["merchant", "count"]
-                        ),
-                        use_container_width=True,
+            elif mode == "Replace" and not confirm_replace:
+                st.error("Confirm Replace before continuing")
+            else:
+                try:
+                    # Re-open upload buffer if needed
+                    if uploaded is not None:
+                        import io
+
+                        handle = io.StringIO(uploaded.getvalue().decode("utf-8-sig"))
+                    report = import_csv(
+                        conn,
+                        handle,
+                        mode=mode.lower(),
+                        confirm_replace=(mode == "Replace" and confirm_replace),
+                        create_backup=True,
                     )
-                else:
-                    st.write("None")
-                st.subheader("Top categories by spend")
-                st.dataframe(
-                    pd.DataFrame(
-                        report["top_categories_by_spend"], columns=["category", "spend"]
-                    ),
-                    use_container_width=True,
-                )
-                ddl = report.get("due_date_learn") or {}
-                if ddl.get("error"):
-                    st.warning(f"Due-date learn skipped: {ddl['error']}")
-                elif ddl:
-                    st.caption(
-                        f"Due-date learn: {ddl.get('applied_rule_changes', 0)} rule DOM updates · "
-                        f"wrote data/due_date_learned.json"
+                    settings_now = db.get_settings(conn)
+                    write_import_report(
+                        report,
+                        {
+                            "start_balance": settings_now["start_balance"],
+                            "start_date": settings_now["start_date"].isoformat(),
+                            "end_date": settings_now["end_date"].isoformat(),
+                        },
+                        Path(__file__).resolve().parent / "data" / "import_report.md",
                     )
-                st.caption("Wrote data/import_report.md and refreshed merchant maps.")
-                st.cache_resource.clear()
-        except Exception as e:
-            st.error(f"Import failed: {e}")
+                    cr = report.get("change_report") or {}
+                    st.success(
+                        f"{mode}: inserted {cr.get('inserted', report['rows_imported'])} · "
+                        f"skipped dupes {cr.get('skipped_duplicates', 0)} · "
+                        f"cleared {cr.get('cleared_bank_csv', 0)} · "
+                        f"{report['pct_categorized']}% categorized"
+                    )
+                    if (report.get("backup") or {}).get("path"):
+                        st.caption(f"Pre-import backup: `{report['backup']['path']}`")
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Inserted", report["rows_imported"])
+                    c2.metric("Skipped dupes", report.get("rows_skipped_duplicates", 0))
+                    c3.metric("Money in", money(report["total_in"]))
+                    c4.metric("Money out", money(report["total_out"]))
+                    st.subheader("Change report")
+                    st.json(cr)
+                    st.subheader("Top uncategorized merchants")
+                    if report["top_uncategorized"]:
+                        st.dataframe(
+                            pd.DataFrame(
+                                report["top_uncategorized"], columns=["merchant", "count"]
+                            ),
+                            use_container_width=True,
+                        )
+                    else:
+                        st.write("None")
+                    ddl = report.get("due_date_learn") or {}
+                    if ddl.get("error"):
+                        st.warning(f"Due-date learn skipped: {ddl['error']}")
+                    elif ddl:
+                        st.caption(
+                            f"Due-date learn: {ddl.get('applied_rule_changes', 0)} rule DOM updates · "
+                            f"wrote data/due_date_learned.json"
+                        )
+                    st.caption("Wrote data/import_report.md and refreshed merchant maps.")
+                    st.session_state.pop("bank_import_preview", None)
+                    st.cache_resource.clear()
+                except Exception as e:
+                    st.error(f"Import failed: {e}")
 
     st.divider()
     st.subheader("Rewards Card card CSV")
@@ -7690,99 +8026,222 @@ elif page == "Settings":
             st.rerun()
 
     st.divider()
+    st.subheader("Household backup & restore")
+    st.caption(
+        "ZIP includes SQLite (settings, rules, planned, actuals, scenarios, merchant maps) "
+        "plus sidecars when present: debts, live checking, net worth, retirement, tax, rewards."
+    )
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button("Create backup ZIP", key="settings_backup_create"):
+            try:
+                info = create_household_backup(label="manual")
+                st.success(f"Backup written: `{info['path']}` ({info.get('bytes', 0)} bytes)")
+                st.json({k: info[k] for k in ("created_at", "table_counts", "sidecars", "init_mode") if k in info})
+            except Exception as e:
+                st.error(f"Backup failed: {e}")
+    with b2:
+        bak_dir = backups_dir()
+        existing = sorted(bak_dir.glob("household_backup_*.zip"), reverse=True)[:20]
+        st.caption(f"Recent backups in `{bak_dir}`: {len(existing)}")
+    restore_up = st.file_uploader("Restore from backup ZIP", type=["zip"], key="restore_zip")
+    restore_path = st.text_input("Or restore path on server", value="", key="restore_path")
+    confirm_restore = st.checkbox(
+        "I understand restore replaces the current household DB/sidecars (auto-backup first)",
+        value=False,
+        key="confirm_restore",
+    )
+    if st.button("Validate & restore", key="settings_restore_run"):
+        try:
+            import tempfile
+
+            zip_target = None
+            if restore_up is not None:
+                tmp = Path(tempfile.mkdtemp()) / "restore.zip"
+                tmp.write_bytes(restore_up.getvalue())
+                zip_target = tmp
+            elif restore_path.strip():
+                zip_target = Path(restore_path.strip())
+            else:
+                st.error("Provide a ZIP upload or path")
+                zip_target = None
+            if zip_target is not None:
+                val = validate_backup_zip(zip_target)
+                st.write("Validation:", "OK" if val.get("ok") else val.get("issues"))
+                st.json(val.get("manifest") or {})
+                if not confirm_restore:
+                    st.error("Confirm restore before replacing current data")
+                else:
+                    result = restore_household_backup(zip_target, auto_backup_current=True)
+                    st.success(
+                        f"Restored DB + {len(result.get('restored_sidecars') or [])} sidecars. "
+                        f"Pre-restore backup: `{(result.get('pre_restore_backup') or {}).get('path')}`"
+                    )
+                    st.cache_resource.clear()
+                    st.rerun()
+        except Exception as e:
+            st.error(f"Restore failed: {e}")
+
+    st.divider()
+    st.subheader("Optional modules")
+    st.caption(
+        "Core pages, scenarios, and forecast guard stay on. "
+        "Due-date and variable-amount learning turn on automatically once history is sufficient — "
+        "they are never an install prompt."
+    )
+    _flags_now = load_module_flags(conn)
+    with st.form("optional_modules_form"):
+        cols = st.columns(2)
+        _new_flags = dict(_flags_now)
+        for idx, (mid, meta) in enumerate(OPTIONAL_MODULES.items()):
+            with cols[idx % 2]:
+                _new_flags[mid] = st.checkbox(
+                    meta["label"],
+                    value=bool(_flags_now.get(mid)),
+                    key=f"mod_flag_{mid}",
+                    help="Off by default for Clean households; on for Explore Demo.",
+                )
+        if st.form_submit_button("Save module flags"):
+            save_module_flags(conn, _new_flags)
+            st.success("Module flags saved")
+            st.rerun()
+    _cap_mods = (capability_status(conn).get("module_status") or {})
+    st.caption(
+        " · ".join(
+            f"{v.get('label')}: {v.get('status_label')}"
+            for k, v in _cap_mods.items()
+        )
+    )
+    st.divider()
+
     st.subheader("Net worth cards (optional)")
     st.caption(
         "Brokerage / Fidelity and Savings balances for the pictorial cards on "
         "Dashboard and Bills. Leave blank until you have figures — cards show an "
-        "em dash, not \\$0. Does **not** change checking start balance or the cash twin."
+        "em dash, not $0. Does **not** change checking start balance or the cash twin."
     )
-    _nw = load_snapshot()
-
-    def _nw_parse(raw: str):
-        s = (raw or "").strip().replace(",", "").replace("$", "")
-        if not s:
-            return None
-        return float(s)
-
-    with st.form("net_worth_form"):
-        fid_txt = st.text_input(
-            "Brokerage / Fidelity balance",
-            value=(
-                f"{_nw['fidelity_brokerage_balance']:.2f}"
-                if _nw.get("fidelity_brokerage_balance") is not None
-                else ""
-            ),
-            placeholder="Leave blank = Not set yet",
-            key="nw_fid_bal",
+    if not is_module_enabled(conn, "net_worth"):
+        st.info(
+            "Net Worth is not enabled. Turn it on under **Optional modules** above. "
+            "Clean households never ship demo brokerage/savings figures."
         )
-        sav_txt = st.text_input(
-            "Savings balance",
-            value=(
-                f"{_nw['savings_balance']:.2f}"
-                if _nw.get("savings_balance") is not None
-                else ""
-            ),
-            placeholder="Leave blank = Not set yet",
-            key="nw_sav_bal",
-        )
-        as_of_in = st.text_input(
-            "Balances as of (optional date label)",
-            value=_nw.get("balances_as_of") or "",
-            placeholder="e.g. 2026-09-12",
-            key="nw_as_of",
-        )
-        if st.form_submit_button("Save net-worth balances"):
-            try:
-                fid_val = _nw_parse(fid_txt)
-                sav_val = _nw_parse(sav_txt)
-            except ValueError:
-                st.error("Balances must be numbers (or blank).")
-            else:
-                save_snapshot(
-                    fidelity_brokerage_balance=fid_val,
-                    savings_balance=sav_val,
-                    balances_as_of=as_of_in.strip() or None,
-                )
-                db.set_setting(
-                    conn,
-                    "fidelity_brokerage_balance",
-                    "" if fid_val is None else fid_val,
-                )
-                db.set_setting(
-                    conn,
-                    "savings_balance",
-                    "" if sav_val is None else sav_val,
-                )
-                db.set_setting(conn, "balances_as_of", as_of_in.strip() if as_of_in else "")
-                st.success("Net-worth card balances saved")
-                st.rerun()
+    else:
+        _nw = load_snapshot()
 
-    st.divider()
-    st.subheader("Seed import")
+        def _nw_parse(raw: str):
+            s = (raw or "").strip().replace(",", "").replace("$", "")
+            if not s:
+                return None
+            return float(s)
+
+        with st.form("net_worth_form"):
+            fid_txt = st.text_input(
+                "Brokerage / Fidelity balance",
+                value=(
+                    f"{_nw['fidelity_brokerage_balance']:.2f}"
+                    if _nw.get("fidelity_brokerage_balance") is not None
+                    else ""
+                ),
+                placeholder="Leave blank = Not set yet",
+                key="nw_fid_bal",
+            )
+            sav_txt = st.text_input(
+                "Savings balance",
+                value=(
+                    f"{_nw['savings_balance']:.2f}"
+                    if _nw.get("savings_balance") is not None
+                    else ""
+                ),
+                placeholder="Leave blank = Not set yet",
+                key="nw_sav_bal",
+            )
+            as_of_in = st.text_input(
+                "Balances as of (optional date label)",
+                value=_nw.get("balances_as_of") or "",
+                placeholder="e.g. 2026-09-12",
+                key="nw_as_of",
+            )
+            if st.form_submit_button("Save net-worth balances"):
+                try:
+                    fid_val = _nw_parse(fid_txt)
+                    sav_val = _nw_parse(sav_txt)
+                except ValueError:
+                    st.error("Balances must be numbers (or blank).")
+                else:
+                    save_snapshot(
+                        fidelity_brokerage_balance=fid_val,
+                        savings_balance=sav_val,
+                        balances_as_of=as_of_in.strip() or None,
+                    )
+                    db.set_setting(
+                        conn,
+                        "fidelity_brokerage_balance",
+                        "" if fid_val is None else fid_val,
+                    )
+                    db.set_setting(
+                        conn,
+                        "savings_balance",
+                        "" if sav_val is None else sav_val,
+                    )
+                    db.set_setting(conn, "balances_as_of", as_of_in.strip() if as_of_in else "")
+                    st.success("Net-worth card balances saved")
+                    st.rerun()
+
+    st.subheader("Household mode & seed")
+    _mode_now = get_init_mode(conn) or "unset"
+    st.write(
+        f"**Current mode:** `{_mode_now}` — "
+        + (
+            "Explore Demo (synthetic Alex/Jordan)."
+            if _mode_now == INIT_MODE_DEMO
+            else (
+                "My Household (clean — no demo finances)."
+                if _mode_now == INIT_MODE_CLEAN
+                else "not set."
+            )
+        )
+    )
     seed_path = resolve_seed_dir()
     st.write(f"Detected seed: `{seed_path}`" if seed_path else "No seed directory found.")
-    meta = conn.execute("SELECT key, value FROM settings WHERE key LIKE 'seed%' OR key IN ('import_summary','mortgage_policy','secondary_2028_policy')").fetchall()
+    meta = conn.execute(
+        "SELECT key, value FROM settings WHERE key LIKE 'seed%' OR key IN "
+        "('import_summary','mortgage_policy','secondary_2028_policy','household_init_mode','household_name')"
+    ).fetchall()
     if meta:
         st.json({r["key"]: r["value"] for r in meta})
-    prefer_mortgage = st.checkbox(
-        "Prefer single mortgage (Loans!X11 −950.00) — cleaned what-if, not Excel-parity",
-        value=False,
-    )
-    inherit_d = st.checkbox("Jordan 2028 inherit 2027 (\\$1500) — Excel cell is blank", value=False)
-    if st.button("Re-import seed (reset rules/scenarios; keeps bank_csv actuals)"):
-        if not seed_path:
-            st.error("No seed found")
-        else:
-            summary = import_seed(
-                conn, seed_path, prefer_single_mortgage=prefer_mortgage, secondary_2028_inherit=inherit_d, reset=True
-            )
-            st.success(summary)
+
+    if _mode_now == INIT_MODE_CLEAN:
+        st.info(
+            "Clean mode never re-applies demo seed or excel-parity on restart. "
+            "Switching to Explore Demo below replaces your clean rules/settings with synthetic data."
+        )
+        if st.button("Switch to Explore Demo (destructive)", key="settings_switch_demo"):
+            init_demo_household(conn)
             st.cache_resource.clear()
             st.rerun()
-
-    st.caption(
-        "Default re-import is **Excel-parity** (double mortgage through 2027-12, wife −2500 "
-        "through Feb 2027, side_gig Other Income stamps, HOA/presser overlays). "
-        "Live seam restored to **\\$4,525.32** on **2026-09-12** with Sep Budget workbook override. "
-        "Bank CSV actuals are kept. Single-mortgage is also a named scenario."
-    )
+    else:
+        prefer_mortgage = st.checkbox(
+            "Prefer single mortgage (Loans!X11 −950.00) — cleaned what-if, not Excel-parity",
+            value=False,
+        )
+        inherit_d = st.checkbox(
+            "Jordan 2028 inherit 2027 ($1500) — Excel cell is blank", value=False
+        )
+        if st.button("Re-import seed (reset rules/scenarios; keeps bank_csv actuals)"):
+            if not seed_path:
+                st.error("No seed found")
+            else:
+                summary = import_seed(
+                    conn,
+                    seed_path,
+                    prefer_single_mortgage=prefer_mortgage,
+                    secondary_2028_inherit=inherit_d,
+                    reset=True,
+                )
+                st.success(summary)
+                st.cache_resource.clear()
+                st.rerun()
+        st.caption(
+            "Default re-import is **Excel-parity** (demo overlays). "
+            "Bank CSV actuals are kept. This stays on Explore Demo mode."
+        )

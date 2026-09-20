@@ -236,6 +236,11 @@ def import_seed(
         "live_seam": seam,
     }
     db.set_setting(conn, "import_summary", json.dumps(summary, default=str))
+    # Direct re-import / seed_demo is always the Explore Demo path.
+    from .household_init import INIT_MODE_DEMO, SETTING_INIT_MODE, set_init_mode
+
+    set_init_mode(conn, INIT_MODE_DEMO)
+    summary[SETTING_INIT_MODE] = INIT_MODE_DEMO
     return summary
 
 
@@ -371,21 +376,50 @@ def _parity_flags_from_settings(conn) -> tuple[bool, bool]:
 
 
 def ensure_seeded(conn) -> dict:
-    """Init schema, import seed if empty, then always re-apply excel parity.
+    """Init schema; seed/parity only for Explore Demo (never for Clean).
 
-    Streamlit Cloud keeps a persistent cashflow.db across deploys. Bootstrap
-    restore only replaces *thin* DBs, so new recurring overlays (e.g. Demo Cleaners
-    cleaning) shipped in code would never land unless we upsert them on every
-    boot. ``apply_excel_parity`` is surgical: it upserts labeled rules and
-    refreshes ``excel_parity_forecast`` planned rows without wiping Chase
-    actuals or Sep Budget workbook planned.
+    - **clean**: schema + existing user settings only. No import_seed, no
+      excel_parity, no demo scenarios. Empty rules is normal and must not
+      trigger re-injection on restart.
+    - **demo** (or legacy DB with rules but no mode flag): keep prior behavior —
+      import if empty, then surgically re-apply excel_parity overlays.
+    - **no mode + empty**: do not auto-seed; first-run UI chooses Demo vs Clean.
     """
+    from .household_init import (
+        INIT_MODE_CLEAN,
+        INIT_MODE_DEMO,
+        SETTING_INIT_MODE,
+        get_init_mode,
+        set_init_mode,
+    )
+
     db.init_db(conn)
+    mode = get_init_mode(conn)
+
+    if mode == INIT_MODE_CLEAN:
+        return {
+            "already_seeded": True,
+            SETTING_INIT_MODE: INIT_MODE_CLEAN,
+            "excel_parity": None,
+            "skipped_demo_inject": True,
+        }
+
+    # Legacy: rules present but mode unset → treat as demo going forward.
+    if mode is None and not db.is_empty(conn):
+        set_init_mode(conn, INIT_MODE_DEMO)
+        mode = INIT_MODE_DEMO
+
+    if mode is None and db.is_empty(conn):
+        # First-run chooser owns seeding; do not inject demo here.
+        return {"needs_init": True, SETTING_INIT_MODE: None}
+
+    # Demo path
     if db.is_empty(conn):
         if resolve_seed_dir():
-            # import_seed already calls apply_excel_parity
-            return import_seed(conn)
-        # Minimal fallback if no seed files
+            summary = import_seed(conn)
+            set_init_mode(conn, INIT_MODE_DEMO)
+            summary[SETTING_INIT_MODE] = INIT_MODE_DEMO
+            return summary
         db.save_settings(
             conn,
             {
@@ -396,6 +430,7 @@ def ensure_seeded(conn) -> dict:
                 "breach_threshold": 0.0,
             },
         )
+        set_init_mode(conn, INIT_MODE_DEMO)
         summary = {"seed_dir": None, "rules_imported": 0, "fallback": True}
     else:
         summary = {"already_seeded": True}
@@ -408,4 +443,7 @@ def ensure_seeded(conn) -> dict:
         prefer_single_mortgage=prefer_single_mortgage,
         secondary_2028_inherit=secondary_2028_inherit,
     )
+    summary[SETTING_INIT_MODE] = INIT_MODE_DEMO
+    if get_init_mode(conn) != INIT_MODE_DEMO:
+        set_init_mode(conn, INIT_MODE_DEMO)
     return summary

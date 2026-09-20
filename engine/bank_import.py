@@ -388,6 +388,19 @@ def parse_csv_rows(path_or_file) -> list[dict]:
                     balance = float(bal_raw)
                 except ValueError:
                     balance = None
+            external_id = _first_present(
+                row,
+                "Transaction ID",
+                "Transaction Id",
+                "FitId",
+                "FITID",
+                "Check or Slip #",
+                "Check Number",
+                "Ref #",
+                "Reference",
+                "Id",
+                "ID",
+            )
             item = {
                 "date": iso,
                 "amount": amount,
@@ -398,6 +411,7 @@ def parse_csv_rows(path_or_file) -> list[dict]:
                 "chase_category": (row.get("Category") or "").strip(),
                 "memo": (row.get("Memo") or "").strip(),
                 "csv_kind": kind,
+                "external_id": external_id or None,
             }
             out.append(item)
         return out
@@ -594,74 +608,272 @@ def format_category(parent: str, subcategory: str) -> str:
     return f"{parent}/{subcategory}"
 
 
+def normalize_memo(text: str) -> str:
+    """Normalize memo/label for fingerprinting."""
+    t = (text or "").strip().upper()
+    t = re.sub(r"\s+", " ", t)
+    t = re.sub(r"[^A-Z0-9 #*/.&'-]+", "", t)
+    return t[:120]
+
+
+def txn_fingerprint(
+    *,
+    date: str,
+    amount: float,
+    label: str = "",
+    memo: str = "",
+    source: str = CSV_SOURCE,
+    external_id: Optional[str] = None,
+) -> str:
+    """Duplicate key: prefer stable bank ID; else date+amount+normalized memo+source."""
+    ext = (external_id or "").strip()
+    if ext:
+        return f"id:{source}:{ext}"
+    memo_norm = normalize_memo(memo or label)
+    amt = f"{float(amount):.2f}"
+    return f"{source}|{date}|{amt}|{memo_norm}"
+
+
+def fingerprint_for_actual(row: dict, *, source: str = CSV_SOURCE) -> str:
+    return txn_fingerprint(
+        date=str(row.get("date") or ""),
+        amount=float(row.get("amount") or 0),
+        label=str(row.get("label") or ""),
+        memo=str(row.get("memo") or ""),
+        source=str(row.get("source") or source),
+        external_id=row.get("external_id"),
+    )
+
+
+def existing_fingerprints(conn, *, source: str = CSV_SOURCE) -> set[str]:
+    rows = conn.execute(
+        """SELECT date, amount, label, memo, source, external_id
+           FROM actuals WHERE source=?""",
+        (source,),
+    ).fetchall()
+    return {fingerprint_for_actual(dict(r), source=source) for r in rows}
+
+
+def _categorize_parsed_rows(rows: list[dict], mapper: "MerchantMapper") -> list[dict]:
+    categorized = []
+    for r in rows:
+        parent, sub, legacy = mapper.categorize_full(r["label"], r["amount"])
+        categorized.append(
+            {
+                "date": r["date"],
+                "amount": r["amount"],
+                "category": legacy,
+                "parent": parent,
+                "subcategory": sub,
+                "label": r["label"],
+                "source": CSV_SOURCE,
+                "enabled": True,
+                "memo": r.get("memo") or "",
+                "txn_type": r.get("type") or "",
+                "external_id": r.get("external_id"),
+                "fingerprint": txn_fingerprint(
+                    date=r["date"],
+                    amount=r["amount"],
+                    label=r["label"],
+                    memo=r.get("memo") or "",
+                    source=CSV_SOURCE,
+                    external_id=r.get("external_id"),
+                ),
+            }
+        )
+    return categorized
+
+
+SHORT_HISTORY_DAYS = 45
+
+
+def preview_csv_import(conn, path_or_file, *, source: str = CSV_SOURCE) -> dict[str, Any]:
+    """Non-destructive preview before Merge/Replace."""
+    db.init_db(conn)
+    rows = parse_csv_rows(path_or_file)
+    mapper = MerchantMapper.load(conn)
+    categorized = _categorize_parsed_rows(rows, mapper)
+    dates = [r["date"] for r in rows]
+    date_min = min(dates) if dates else None
+    date_max = max(dates) if dates else None
+    n_cat = sum(1 for i in categorized if i["subcategory"] != UNCATEGORIZED)
+    n_uncat = len(categorized) - n_cat
+
+    existing = conn.execute(
+        "SELECT date, amount, label, memo, source, external_id FROM actuals WHERE source=?",
+        (source,),
+    ).fetchall()
+    existing_fps = {fingerprint_for_actual(dict(r), source=source) for r in existing}
+    existing_dates = [str(dict(r)["date"]) for r in existing]
+    ex_min = min(existing_dates) if existing_dates else None
+    ex_max = max(existing_dates) if existing_dates else None
+
+    dupes = [i for i in categorized if i["fingerprint"] in existing_fps]
+    new_rows = [i for i in categorized if i["fingerprint"] not in existing_fps]
+
+    overlap = False
+    overlap_note = None
+    if date_min and date_max and ex_min and ex_max:
+        overlap = not (date_max < ex_min or date_min > ex_max)
+        if overlap:
+            overlap_note = (
+                f"CSV {date_min}→{date_max} overlaps existing {source} "
+                f"{ex_min}→{ex_max} ({len(existing)} rows)"
+            )
+
+    span_days = None
+    short_history = False
+    if date_min and date_max:
+        d0 = datetime.strptime(date_min, "%Y-%m-%d").date()
+        d1 = datetime.strptime(date_max, "%Y-%m-%d").date()
+        span_days = (d1 - d0).days + 1
+        short_history = span_days < SHORT_HISTORY_DAYS
+
+    return {
+        "rows_parsed": len(rows),
+        "date_min": date_min,
+        "date_max": date_max,
+        "span_days": span_days,
+        "categorized": n_cat,
+        "uncategorized": n_uncat,
+        "pct_categorized": round(100.0 * n_cat / len(categorized), 1) if categorized else 0.0,
+        "existing_bank_csv_rows": len(existing),
+        "existing_date_min": ex_min,
+        "existing_date_max": ex_max,
+        "overlap": overlap,
+        "overlap_note": overlap_note,
+        "duplicate_count": len(dupes),
+        "new_row_count": len(new_rows),
+        "short_history_warning": short_history,
+        "short_history_message": (
+            f"CSV spans only {span_days} day(s) (< {SHORT_HISTORY_DAYS}). "
+            "A short export can look fine in preview but leave large gaps in history."
+            if short_history and span_days is not None
+            else None
+        ),
+        "sample_new": [
+            {"date": i["date"], "amount": i["amount"], "label": (i["label"] or "")[:60]}
+            for i in new_rows[:8]
+        ],
+        "sample_duplicates": [
+            {"date": i["date"], "amount": i["amount"], "label": (i["label"] or "")[:60]}
+            for i in dupes[:8]
+        ],
+        "top_uncategorized": Counter(
+            merchant_stem(i["label"])
+            for i in categorized
+            if i["subcategory"] == UNCATEGORIZED
+        ).most_common(10),
+    }
+
+
 def import_csv(
     conn,
     path_or_file,
     *,
     replace_csv_actuals: bool = True,
+    mode: Optional[str] = None,
     save_maps: bool = True,
+    create_backup: bool = True,
+    confirm_replace: bool = False,
+    root: Optional[Path] = None,
 ) -> dict[str, Any]:
     """
     Import bank CSV into actuals with parent + subcategory.
 
-    Choice: delete only rows tagged source='bank_csv', then insert all parsed rows.
+    Modes:
+      - replace: clear source='bank_csv' then insert all (destructive).
+        Requires confirm_replace=True when mode is set explicitly to "replace".
+        Legacy callers using only replace_csv_actuals=True are auto-confirmed.
+      - merge: insert rows whose fingerprint is not already present.
+
+    Auto timestamped household backup runs before replace when create_backup=True.
     Does NOT touch recurring_rules or scenarios.
     """
     db.init_db(conn)
+    mode_explicit = mode is not None
+    if mode is None:
+        mode = "replace" if replace_csv_actuals else "merge"
+    mode = str(mode).strip().lower()
+    if mode not in ("merge", "replace"):
+        raise ValueError(f"Unknown import mode: {mode}")
+    if mode == "replace" and mode_explicit and not confirm_replace:
+        raise ValueError(
+            "Replace is destructive: pass confirm_replace=True after reviewing the preview."
+        )
+
     rows = parse_csv_rows(path_or_file)
     mapper = MerchantMapper.load(conn)
+    categorized = _categorize_parsed_rows(rows, mapper)
 
-    categorized = []
-    uncat_counter: Counter = Counter()
-    cat_spend: Counter = Counter()
-    parent_spend: Counter = Counter()
-    cat_counts: Counter = Counter()
-    parent_counts: Counter = Counter()
-    total_in = 0.0
-    total_out = 0.0
-    samples = []
+    backup_info = None
+    cleared = 0
+    skipped_duplicates = 0
+    to_insert = categorized
 
-    for r in rows:
-        parent, sub, legacy = mapper.categorize_full(r["label"], r["amount"])
-        display = format_category(parent, sub)
-        item = {
-            "date": r["date"],
-            "amount": r["amount"],
-            "category": legacy,  # keep Excel/rule-compatible leaf for override
-            "parent": parent,
-            "subcategory": sub,
-            "label": r["label"],
-            "source": CSV_SOURCE,
-            "enabled": True,
-        }
-        categorized.append(item)
-        cat_counts[display] += 1
-        parent_counts[parent] += 1
-        if r["amount"] >= 0:
-            total_in += r["amount"]
-        else:
-            total_out += r["amount"]
-            cat_spend[display] += abs(r["amount"])
-            parent_spend[parent] += abs(r["amount"])
-        if sub == UNCATEGORIZED:
-            uncat_counter[merchant_stem(r["label"])] += 1
-        if len(samples) < 25 and sub != UNCATEGORIZED:
-            samples.append(
-                {
-                    "date": r["date"],
-                    "amount": r["amount"],
-                    "parent": parent,
-                    "subcategory": sub,
-                    "category": legacy,
-                    "label": r["label"][:70],
-                }
-            )
+    if mode == "replace":
+        if create_backup:
+            try:
+                from engine.household_backup import create_household_backup
 
-    if replace_csv_actuals:
-        db.clear_actuals_by_source(conn, CSV_SOURCE)
+                db_file = None
+                try:
+                    row = conn.execute("PRAGMA database_list").fetchone()
+                    # row: (seq, name, file)
+                    file_path = row[2] if row else None
+                    if file_path:
+                        db_file = Path(file_path)
+                except Exception:
+                    db_file = None
+                backup_root = root
+                if backup_root is None and db_file is not None:
+                    # db usually lives in <root>/data/cashflow.db
+                    backup_root = db_file.resolve().parent.parent
+                backup_info = create_household_backup(
+                    root=backup_root,
+                    db_path=db_file,
+                    label="pre_import_replace",
+                )
+            except FileNotFoundError:
+                backup_info = {"skipped": "no_db_file"}
+            except Exception as e:
+                backup_info = {"error": str(e)}
+        cleared = db.clear_actuals_by_source(conn, CSV_SOURCE)
+        to_insert = categorized
+        replace_policy = (
+            "cleared actuals where source='bank_csv' then inserted all CSV rows "
+            "(timestamped backup before clear)"
+        )
+    else:
+        fps = existing_fingerprints(conn, source=CSV_SOURCE)
+        to_insert = []
+        for item in categorized:
+            if item["fingerprint"] in fps:
+                skipped_duplicates += 1
+            else:
+                to_insert.append(item)
+                fps.add(item["fingerprint"])
+        replace_policy = (
+            f"merge: inserted new fingerprints only; skipped {skipped_duplicates} duplicates"
+        )
 
-    for item in categorized:
-        db.add_actual(conn, item)
+    for item in to_insert:
+        db.add_actual(
+            conn,
+            {
+                "date": item["date"],
+                "amount": item["amount"],
+                "category": item["category"],
+                "parent": item["parent"],
+                "subcategory": item["subcategory"],
+                "label": item["label"],
+                "source": item["source"],
+                "enabled": True,
+                "txn_type": item.get("txn_type"),
+                "memo": item.get("memo"),
+                "external_id": item.get("external_id"),
+            },
+        )
 
     if save_maps:
         mapper.save(conn)
@@ -693,9 +905,45 @@ def import_csv(
 
     dates = [r["date"] for r in rows]
     n_cat = sum(1 for i in categorized if i["subcategory"] != UNCATEGORIZED)
+    uncat_counter: Counter = Counter()
+    cat_spend: Counter = Counter()
+    parent_spend: Counter = Counter()
+    cat_counts: Counter = Counter()
+    parent_counts: Counter = Counter()
+    total_in = 0.0
+    total_out = 0.0
+    samples = []
+    for item in categorized:
+        display = format_category(item["parent"], item["subcategory"])
+        cat_counts[display] += 1
+        parent_counts[item["parent"]] += 1
+        amt = float(item["amount"])
+        if amt >= 0:
+            total_in += amt
+        else:
+            total_out += amt
+            cat_spend[display] += abs(amt)
+            parent_spend[item["parent"]] += abs(amt)
+        if item["subcategory"] == UNCATEGORIZED:
+            uncat_counter[merchant_stem(item["label"])] += 1
+        if len(samples) < 25 and item["subcategory"] != UNCATEGORIZED:
+            samples.append(
+                {
+                    "date": item["date"],
+                    "amount": item["amount"],
+                    "parent": item["parent"],
+                    "subcategory": item["subcategory"],
+                    "category": item["category"],
+                    "label": item["label"][:70],
+                }
+            )
+
     report = {
         "rows_parsed": len(rows),
-        "rows_imported": len(categorized),
+        "rows_imported": len(to_insert),
+        "rows_skipped_duplicates": skipped_duplicates,
+        "rows_cleared": cleared,
+        "mode": mode,
         "categorized": n_cat,
         "uncategorized": len(categorized) - n_cat,
         "pct_categorized": round(100.0 * n_cat / len(categorized), 1) if categorized else 0.0,
@@ -709,12 +957,23 @@ def import_csv(
         "category_counts": cat_counts.most_common(),
         "parent_counts": parent_counts.most_common(),
         "sample_mapped": samples[:15],
-        "replace_policy": "cleared actuals where source='bank_csv' then inserted all CSV rows",
+        "replace_policy": replace_policy,
+        "backup": backup_info,
         "csv_balances": _balance_snapshot(rows),
         "taxonomy_version": 2,
         "due_date_learn": due_date_learn_report,
+        "change_report": {
+            "mode": mode,
+            "inserted": len(to_insert),
+            "skipped_duplicates": skipped_duplicates,
+            "cleared_bank_csv": cleared,
+            "backup_path": (backup_info or {}).get("path"),
+            "date_min": min(dates) if dates else None,
+            "date_max": max(dates) if dates else None,
+        },
     }
     return report
+
 
 
 def reclassify_actuals(conn, *, source: str = CSV_SOURCE) -> dict[str, Any]:
