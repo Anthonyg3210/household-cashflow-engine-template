@@ -16,18 +16,38 @@ Never commit real bank CSVs, balances, loan numbers, tax returns, or employer pa
 
 Demo household (intentionally fake): **Alex Rivera** (primary) · **Jordan Lee** (secondary). Employers: Northstar Tech · BrightStart side-gig.
 
-## Quick start (demo)
+## Quick start
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+streamlit run app.py
+```
+
+First run: choose **Explore Demo** or **Start My Household**. Or pre-build the demo DB with `python scripts/seed_demo.py` (writes `data/cashflow.db` + `sample/demo_bootstrap.db`).
+
+## Explore Demo vs Start My Household
+
+On first launch (empty DB), the app asks you to choose — the modes are hard to confuse:
+
+| Mode | What you get |
+|------|----------------|
+| **Explore Demo** | Synthetic Alex/Jordan seed, excel-parity overlays, demo debts/scenarios (intentional). |
+| **Start My Household** | Clean portable household: generic defaults + optional name / start date / starting balance / as-of / horizon / warning threshold. **No** demo rules, paychecks, debts, bonuses, tax/retirement/rewards seeds, or excel-parity. |
+
+Clean mode is sticky: restart will **not** re-inject demo data or replace your DB from `cloud_bootstrap.db`.
+
+CLI shortcut for demo only:
+
+```bash
 python scripts/seed_demo.py
 streamlit run app.py
 ```
 
-`seed_demo.py` builds `data/cashflow.db` from `seed/` and also writes `sample/demo_bootstrap.db`.
+Or run the app with no DB and click **Explore Demo** / **Start My Household**.
 
 ## Import your own bank CSV (runtime)
+
 
 1. Run the app (or seed demo first).
 2. Use the sidebar / import scripts, for example:

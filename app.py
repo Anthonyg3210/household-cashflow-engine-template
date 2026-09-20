@@ -57,6 +57,18 @@ from engine.calendar_view import (
     bifurcate_bill_rows,
 )
 from engine.seed_load import ensure_seeded, import_seed, resolve_seed_dir
+from engine.household_init import (
+    INIT_MODE_CLEAN,
+    INIT_MODE_DEMO,
+    SETTING_HOUSEHOLD_NAME,
+    SETTING_INIT_MODE,
+    capability_status,
+    get_init_mode,
+    init_clean_household,
+    init_demo_household,
+    needs_first_run,
+    peek_init_mode,
+)
 from engine.bank_import import (
     import_csv,
     write_import_report,
@@ -237,11 +249,18 @@ _inject_app_wallpaper()
 
 @st.cache_resource
 def get_conn():
-    # Restore tracked bootstrap BEFORE opening the connection (Cloud empty-DB fix).
-    # ensure_seeded always re-applies excel_parity so rule overlays (Demo Cleaners, etc.)
-    # land on existing Cloud DBs without requiring a full bootstrap replace.
-    db.maybe_restore_from_bootstrap()
-    conn = db.connect()
+    """Open DB without surprising demo injection.
+
+    Bootstrap auto-copy only for existing demo/legacy DBs (thin Cloud repair).
+    First-run and Clean never pull sample/demo_bootstrap via restore.
+    ensure_seeded applies excel_parity for demo only.
+    """
+    mode = peek_init_mode(db.DB_PATH)
+    # Repair thin demo/legacy DBs only — never copy bootstrap onto a missing DB
+    # (that would skip the Explore Demo vs Start My Household chooser).
+    if mode != INIT_MODE_CLEAN:
+        db.maybe_restore_from_bootstrap(allow_missing_copy=False)
+    conn = db.connect(restore_bootstrap=False)
     ensure_seeded(conn)
     return conn
 
@@ -1625,8 +1644,81 @@ def rerun_clear():
     st.rerun()
 
 
+def _render_first_run_chooser(conn) -> None:
+    """Impossible-to-confuse Demo vs Clean — blocks the rest of the app."""
+    st.title("Household Cashflow Engine")
+    st.markdown("### How do you want to start?")
+    st.caption(
+        "One choice, then the app remembers it. "
+        "Clean never loads the Alex/Jordan demo on restart."
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("Explore Demo")
+        st.write(
+            "Synthetic **Alex Rivera / Jordan Lee** household — rules, paychecks, "
+            "debts, scenarios, and excel-parity overlays. Safe to poke around."
+        )
+        if st.button("Explore Demo", type="primary", use_container_width=True, key="btn_explore_demo"):
+            init_demo_household(conn)
+            st.cache_resource.clear()
+            st.rerun()
+    with c2:
+        st.subheader("Start My Household")
+        st.write(
+            "Blank portable household — **no** demo rules, paychecks, debts, "
+            "bonuses, tax/retirement/rewards seeds, or excel-parity overlays."
+        )
+        with st.form("clean_household_form"):
+            hh_name = st.text_input("Household name (optional)", value="")
+            start_d = st.date_input("Start date", value=date.today())
+            as_of = st.text_input("Balances as-of (optional)", value="", placeholder="YYYY-MM-DD")
+            start_bal = st.number_input("Starting balance", value=0.0, step=100.0, format="%.2f")
+            horizon = st.date_input(
+                "Forecast horizon end",
+                value=date(date.today().year + 3, date.today().month, min(date.today().day, 28)),
+            )
+            warn = st.number_input("Warning threshold", value=100.0, step=50.0, format="%.2f")
+            submitted = st.form_submit_button("Start My Household", use_container_width=True)
+            if submitted:
+                init_clean_household(
+                    conn,
+                    household_name=hh_name,
+                    start_date=start_d,
+                    end_date=horizon,
+                    start_balance=float(start_bal),
+                    warning_threshold=float(warn),
+                    as_of=as_of,
+                )
+                st.cache_resource.clear()
+                st.rerun()
+
+
+def _render_capability_strip(conn) -> None:
+    """Lightweight core / modules / learning status (sidebar)."""
+    cap = capability_status(conn)
+    mode = cap.get("mode")
+    mode_lbl = (
+        "Mode: Explore Demo"
+        if mode == INIT_MODE_DEMO
+        else ("Mode: My Household" if mode == INIT_MODE_CLEAN else "Mode: unset")
+    )
+    st.sidebar.markdown(f"**{mode_lbl}**")
+    st.sidebar.caption(
+        f"{cap['label_core']} · {cap['label_modules']} · {cap['label_learning']}"
+    )
+
+
+# First-run gate (before nav) — empty DB with no mode must choose.
+_init_mode = get_init_mode(conn)
+if _init_mode is None and (needs_first_run(db.DB_PATH) or db.is_empty(conn)):
+    # ensure_seeded left needs_init; show chooser only.
+    _render_first_run_chooser(conn)
+    st.stop()
+
 # Sidebar nav
 st.sidebar.title("Household Cashflow Engine")
+_render_capability_strip(conn)
 page = st.sidebar.radio(
     "Pages",
     [
@@ -1653,9 +1745,14 @@ all_actuals = db.list_actuals(conn)
 actuals = [a for a in all_actuals if (a.get("source") or "") != BLACK_CARD_SOURCE]
 scenarios = db.list_scenarios(conn)
 
+_hh = conn.execute(
+    "SELECT value FROM settings WHERE key = ?", (SETTING_HOUSEHOLD_NAME,)
+).fetchone()
+_hh_name = (_hh["value"] if _hh else "") or ""
 st.sidebar.caption(
     _md(
-        f"Horizon {settings['start_date']} → {settings['end_date']}\n\n"
+        (f"{_hh_name}\n\n" if _hh_name else "")
+        + f"Horizon {settings['start_date']} → {settings['end_date']}\n\n"
         f"Start bal {money(settings['start_balance'])} · warn < {money(settings['warning_threshold'])}"
     )
 )
@@ -3851,6 +3948,12 @@ Green = you’re staying inside those windows. It turns yellow/red only if the *
 # ---------- REWARDS CARD / WIFE'S ALLOWANCE FAMILY CARD ----------
 elif page == "Rewards Card — demo rewards card":
     st.title("Family card — Rewards Card")
+    if get_init_mode(conn) == INIT_MODE_CLEAN:
+        st.info(
+            "Rewards module not enabled for a clean household yet. "
+            "Import card CSV later, or use Explore Demo for synthetic card activity."
+        )
+        st.stop()
     st.caption(
         "This is the card Jordan uses for everyday family spending "
         "(groceries, gas, kids, Amazon). "
@@ -4497,6 +4600,12 @@ elif page == "Household debt paydown":
     st.title("Household debt paydown")
 
     _debt_store = load_debts()
+    if not (_debt_store.get("debts") or []):
+        st.info(
+            "Debt module not enabled yet. "
+            "Explore Demo loads synthetic mortgages, or add your own debts under data/debts.json later."
+        )
+        st.stop()
     _second = get_debt(_debt_store, "mortgage_second")
     _first = get_debt(_debt_store, "mortgage_first")
     _stu = get_debt(_debt_store, "student_loans")
@@ -6066,6 +6175,14 @@ elif page == "Household debt paydown":
 # ---------- RETIREMENT RUNWAY ----------
 elif page == "Retirement runway":
     st.title("Retirement runway")
+    if get_init_mode(conn) == INIT_MODE_CLEAN and not (
+        Path("data/retirement_plan.json").exists()
+    ):
+        st.info(
+            "Retirement module not enabled yet — no demo Alex plan is loaded. "
+            "Add data/retirement_plan.json when ready, or Explore Demo."
+        )
+        st.stop()
     st.caption(_md("Age-aware Comfort targets at 50 / 55 / 60 · BrokerageLink stays on this page only."))
 
     _ret_plan = load_retirement_plan()
@@ -7758,31 +7875,61 @@ elif page == "Settings":
                 st.rerun()
 
     st.divider()
-    st.subheader("Seed import")
+    st.subheader("Household mode & seed")
+    _mode_now = get_init_mode(conn) or "unset"
+    st.write(
+        f"**Current mode:** `{_mode_now}` — "
+        + (
+            "Explore Demo (synthetic Alex/Jordan)."
+            if _mode_now == INIT_MODE_DEMO
+            else (
+                "My Household (clean — no demo finances)."
+                if _mode_now == INIT_MODE_CLEAN
+                else "not set."
+            )
+        )
+    )
     seed_path = resolve_seed_dir()
     st.write(f"Detected seed: `{seed_path}`" if seed_path else "No seed directory found.")
-    meta = conn.execute("SELECT key, value FROM settings WHERE key LIKE 'seed%' OR key IN ('import_summary','mortgage_policy','secondary_2028_policy')").fetchall()
+    meta = conn.execute(
+        "SELECT key, value FROM settings WHERE key LIKE 'seed%' OR key IN "
+        "('import_summary','mortgage_policy','secondary_2028_policy','household_init_mode','household_name')"
+    ).fetchall()
     if meta:
         st.json({r["key"]: r["value"] for r in meta})
-    prefer_mortgage = st.checkbox(
-        "Prefer single mortgage (Loans!X11 −950.00) — cleaned what-if, not Excel-parity",
-        value=False,
-    )
-    inherit_d = st.checkbox("Jordan 2028 inherit 2027 (\\$1500) — Excel cell is blank", value=False)
-    if st.button("Re-import seed (reset rules/scenarios; keeps bank_csv actuals)"):
-        if not seed_path:
-            st.error("No seed found")
-        else:
-            summary = import_seed(
-                conn, seed_path, prefer_single_mortgage=prefer_mortgage, secondary_2028_inherit=inherit_d, reset=True
-            )
-            st.success(summary)
+
+    if _mode_now == INIT_MODE_CLEAN:
+        st.info(
+            "Clean mode never re-applies demo seed or excel-parity on restart. "
+            "Switching to Explore Demo below replaces your clean rules/settings with synthetic data."
+        )
+        if st.button("Switch to Explore Demo (destructive)", key="settings_switch_demo"):
+            init_demo_household(conn)
             st.cache_resource.clear()
             st.rerun()
-
-    st.caption(
-        "Default re-import is **Excel-parity** (double mortgage through 2027-12, wife −2500 "
-        "through Feb 2027, side_gig Other Income stamps, HOA/presser overlays). "
-        "Live seam restored to **\\$4,525.32** on **2026-09-12** with Sep Budget workbook override. "
-        "Bank CSV actuals are kept. Single-mortgage is also a named scenario."
-    )
+    else:
+        prefer_mortgage = st.checkbox(
+            "Prefer single mortgage (Loans!X11 −950.00) — cleaned what-if, not Excel-parity",
+            value=False,
+        )
+        inherit_d = st.checkbox(
+            "Jordan 2028 inherit 2027 ($1500) — Excel cell is blank", value=False
+        )
+        if st.button("Re-import seed (reset rules/scenarios; keeps bank_csv actuals)"):
+            if not seed_path:
+                st.error("No seed found")
+            else:
+                summary = import_seed(
+                    conn,
+                    seed_path,
+                    prefer_single_mortgage=prefer_mortgage,
+                    secondary_2028_inherit=inherit_d,
+                    reset=True,
+                )
+                st.success(summary)
+                st.cache_resource.clear()
+                st.rerun()
+        st.caption(
+            "Default re-import is **Excel-parity** (demo overlays). "
+            "Bank CSV actuals are kept. This stays on Explore Demo mode."
+        )

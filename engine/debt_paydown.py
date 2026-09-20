@@ -248,6 +248,21 @@ def default_seed() -> dict[str, Any]:
 def load_debts(path: Optional[Path] = None) -> dict[str, Any]:
     p = path or DEBTS_PATH
     if not p.exists():
+        # Clean household must not auto-materialize Alex/Jordan demo debts.
+        try:
+            from engine.household_init import (
+                INIT_MODE_CLEAN,
+                empty_debts_store,
+                peek_init_mode,
+            )
+            from engine.db import DB_PATH
+
+            if peek_init_mode(DB_PATH) == INIT_MODE_CLEAN:
+                store = empty_debts_store()
+                save_debts(store, path=p)
+                return store
+        except Exception:
+            pass
         seed = default_seed()
         save_debts(seed, path=p)
         return seed

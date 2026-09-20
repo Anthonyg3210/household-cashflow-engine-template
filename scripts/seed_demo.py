@@ -66,6 +66,7 @@ def main() -> int:
     print(f"  {db_path}")
     print(f"  {demo_boot}")
     print(f"  rules_imported={summary.get('rules_imported')} start_balance={summary.get('start_balance')}")
+    print(f"  household_init_mode={summary.get('household_init_mode', 'demo')}")
     print("Run: streamlit run app.py")
     return 0
 
