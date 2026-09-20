@@ -84,8 +84,7 @@ Before any push: scan the tree for personal names, addresses, loan IDs, payroll 
 
 ## License
 
-**Owner must choose a LICENSE** for this repository before publishing or redistributing.
-This template does **not** pick a license for you — add a root `LICENSE` file when you decide
+**License:** MIT (see root `LICENSE`). Others may use, copy, modify, and fork freely.
 (MIT, Apache-2.0, proprietary, etc.). Until then, treat the code as all-rights-reserved by the owner.
 
 ## Optional modules

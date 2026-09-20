@@ -37,4 +37,4 @@ See `DATA_AND_PRIVACY.md` for where truth lives.
 
 ## License
 
-**Owner must choose a LICENSE** — this template does not select one.
+**License:** MIT (see `LICENSE`) — free to use, copy, modify, and fork.
