@@ -143,3 +143,9 @@ def test_warning_key_uses_days_warning():
     assert streaks[0]["length"] == 2
     # deepest min_eod is 20 → cushion to clear_to 100 = 80
     assert abs(streaks[0]["cushion"] - 80.0) < 1e-9
+
+
+def test_higher_cushion_is_worse():
+    shallow = [_m(2027, 1, min_eod=-10.0)]
+    deep = [_m(2027, 1, min_eod=-80.0)]
+    assert cash_cushion_amount(deep) > cash_cushion_amount(shallow)

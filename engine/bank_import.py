@@ -412,6 +412,7 @@ def parse_csv_rows(path_or_file) -> list[dict]:
                 "memo": (row.get("Memo") or "").strip(),
                 "csv_kind": kind,
                 "external_id": external_id or None,
+                "status": _first_present(row, "Status", "Posting Status"),
             }
             out.append(item)
         return out
@@ -789,6 +790,9 @@ def import_csv(
 
     Auto timestamped household backup runs before replace when create_backup=True.
     Does NOT touch recurring_rules or scenarios.
+    One source updates one account: this path writes bank_csv actuals only
+    and does not clear card actuals. It does not reset the projection
+    start balance.
     """
     db.init_db(conn)
     mode_explicit = mode is not None
@@ -977,7 +981,10 @@ def import_csv(
 
 
 def reclassify_actuals(conn, *, source: str = CSV_SOURCE) -> dict[str, Any]:
-    """Re-run taxonomy classification on existing actuals without re-parsing CSV."""
+    """Re-run taxonomy classification on existing actuals without re-parsing CSV.
+
+    Relabeling is not a balance change: the amount column is never written.
+    """
     db.init_db(conn)
     mapper = MerchantMapper.load(conn)
     rows = conn.execute(
@@ -1105,7 +1112,17 @@ def import_black_card_csv(
     total_fees = 0.0
     samples = []
 
+    from engine.ledger_rules import (
+        is_pending_card_status,
+        posted_card_actuals_from_pending_header,
+    )
+
+    # A pending header is not posted money. Never invent card actuals from it.
+    categorized.extend(posted_card_actuals_from_pending_header(None))
+
     for r in rows:
+        if is_pending_card_status(r.get("status")):
+            continue
         parent, sub, legacy = _categorize_card_row(mapper, r)
         display = format_category(parent, sub)
         txn_type = (r.get("type") or "").strip()

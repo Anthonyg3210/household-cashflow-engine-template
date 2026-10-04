@@ -8,7 +8,10 @@ Semantics (match Excel twin):
   Recurring day-of-month rules replay every month in range.
   Year-varying paycheck amounts via amount_by_year.
   One-off planned items on a date.
-  Actuals override rule flows on the same date+category when present.
+  Actuals replace that month's single forecast line for the same item
+  (amount and classification), even when the bank posts on a different day.
+  Biweekly lines are replaced only on an exact date match.
+  Observed/unverified feeds are not promoted into the forecast.
   Scenario deltas layer on top of baseline without mutating rules.
   suppress_rules_through: if set, recurring rules do not fire on dates
     <= that day (planned/actuals still apply). Used so a hand-managed
@@ -160,6 +163,10 @@ def expand_rules(
     amount_overrides = amount_overrides or {}
     flows: list[Flow] = []
     _var_plans = variable_plans
+    if actuals is not None:
+        from .ledger_rules import is_unverified_feed
+
+        actuals = [a for a in actuals if not is_unverified_feed((a or {}).get("source"))]
     if apply_variable and _var_plans is None and actuals is not None:
         from .variable_amounts import build_plans, VARIABLE_OVERRIDE_CATEGORIES
 
@@ -260,12 +267,57 @@ def expand_items(items: Iterable[dict], source: str = "planned") -> list[Flow]:
 
 
 def apply_actuals_override(rule_flows: list[Flow], actuals: list[Flow]) -> list[Flow]:
-    """Actuals override rules on the same date+category; other rule flows kept."""
+    """Replace a forecast line with the bank actual for that month.
+
+    Exact date+category still replaces the forecast line. A single monthly
+    rule line is also dropped when an actual for that category posts on a
+    different day in the same month, so the old forecast figure is not left
+    beside the bank amount. The actual keeps its own amount and category
+    (classification). If the category was relabeled, a uniquely labeled
+    rule line in that month is dropped so the actual's classification wins.
+    Several rule lines in one month (biweekly pay, for example) are replaced
+    only on an exact date match.
+    """
     if not actuals:
         return rule_flows
-    override_keys = {(a.date, a.category) for a in actuals}
-    kept = [f for f in rule_flows if (f.date, f.category) not in override_keys]
-    return kept + actuals
+    exact = {(a.date, a.category) for a in actuals}
+    month_counts: dict[tuple, int] = {}
+    label_counts: dict[tuple, int] = {}
+    for flow in rule_flows:
+        if flow.source != "rule":
+            continue
+        month_key = (flow.date.year, flow.date.month, flow.category)
+        month_counts[month_key] = month_counts.get(month_key, 0) + 1
+        label = (flow.label or "").strip().casefold()
+        if label:
+            label_key = (flow.date.year, flow.date.month, label)
+            label_counts[label_key] = label_counts.get(label_key, 0) + 1
+    actual_months = {(a.date.year, a.date.month, a.category) for a in actuals}
+    actual_labels = set()
+    for actual in actuals:
+        label = (actual.label or "").strip().casefold()
+        if label:
+            actual_labels.add((actual.date.year, actual.date.month, label))
+
+    kept: list[Flow] = []
+    for flow in rule_flows:
+        if (flow.date, flow.category) in exact:
+            continue
+        if flow.source == "rule":
+            month_key = (flow.date.year, flow.date.month, flow.category)
+            if month_key in actual_months and month_counts.get(month_key) == 1:
+                continue
+            label = (flow.label or "").strip().casefold()
+            label_key = (flow.date.year, flow.date.month, label) if label else None
+            if (
+                label_key
+                and label_key in actual_labels
+                and label_counts.get(label_key) == 1
+                and month_key not in actual_months
+            ):
+                continue
+        kept.append(flow)
+    return kept + list(actuals)
 
 
 def apply_scenario_deltas(
@@ -439,6 +491,11 @@ def project(
     planned = planned or []
     actuals = actuals or []
     scenario_deltas = scenario_deltas or []
+    # Pics and statements feed the verified forecast. An observed or
+    # unverified feed must not. Available balance is not a substitute.
+    from .ledger_rules import is_unverified_feed
+
+    actuals = [a for a in actuals if not is_unverified_feed((a or {}).get("source"))]
 
     rule_flows = expand_rules(
         rules,
@@ -450,7 +507,7 @@ def project(
     planned_flows = expand_items(planned, "planned")
     actual_flows = expand_items(actuals, "actual")
 
-    # Merge rule+planned, then actuals override by date+category
+    # Merge rule+planned, then actuals replace that month's forecast line.
     merged = apply_actuals_override(rule_flows + planned_flows, actual_flows)
 
     if scenario_deltas:

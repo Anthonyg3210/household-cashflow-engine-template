@@ -54,7 +54,15 @@ class VariablePlan:
     monthly_abs: dict[str, float] = field(default_factory=dict)  # YYYY-MM → abs
 
     def amount_for(self, d: date) -> tuple[float, str]:
-        """Return (absolute dollars, method label) for a projection date."""
+        """Return (absolute dollars, method label) for a projection date.
+
+        A month that already has a posted bank actual uses that amount.
+        Later months keep the average. Do not leave the old forecast
+        figure in a month the bank has already posted.
+        """
+        posted = self.monthly_abs.get(f"{d.year:04d}-{d.month:02d}")
+        if posted is not None:
+            return float(posted), "posted actual"
         if self.step_fixed is not None and not self.recent_regime:
             return float(self.step_fixed), "FIXED step-change"
         if self.recent_regime and self.avg3 is not None:
@@ -384,6 +392,9 @@ def plain_english_variable_sentence(row: dict) -> str:
         if la is not None:
             parts.append(f"Last bill was {la_s}.")
         return " ".join(parts)
+
+    if method == "posted actual":
+        return f"This month uses the posted bank amount ({fc_s}), not the planning average."
 
     if method == "last actual":
         parts = [f"Planning from your most recent bill ({la_s})."]

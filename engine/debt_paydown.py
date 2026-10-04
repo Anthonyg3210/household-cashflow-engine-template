@@ -619,7 +619,23 @@ def schedule_for_debt(
     if not first_month:
         as_of = debt.get("balance_as_of") or "2026-09-01"
         first_month = as_of[:7]
-    payment_day = int(debt.get("payment_day") or 11)
+    # Forecast day is the locked post day. A lender next_payment_date is a
+    # period label and must not move the cash day.
+    from engine.ledger_rules import resolve_forecast_dom
+
+    lender_day = None
+    raw_next = debt.get("next_payment_date")
+    if raw_next:
+        try:
+            lender_day = date.fromisoformat(str(raw_next)[:10]).day
+        except ValueError:
+            lender_day = None
+    payment_day = resolve_forecast_dom(
+        locked_day=int(debt["payment_day"]) if debt.get("payment_day") else None,
+        lender_next_day=lender_day,
+    )
+    if payment_day is None:
+        payment_day = 11
     # None → debt default; "" / falsy string → no deferral (extra from first month).
     if extra_start_month is None:
         extra_from = debt.get("extra_start_month")

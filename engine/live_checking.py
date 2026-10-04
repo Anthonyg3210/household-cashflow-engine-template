@@ -146,7 +146,9 @@ def set_live_checking(
     bal = float(balance)
     as_of_s = str(as_of)
     label_s = str(label) if label is not None else _DEFAULT_LABEL
-    pending_list = list(pending) if pending is not None else []
+    from engine.ledger_rules import collapse_same_visit_pending
+
+    pending_list = collapse_same_visit_pending(list(pending)) if pending is not None else []
     note_s = note if note is not None else _auto_note(bal, as_of_s, pending_list)
 
     payload: dict[str, Any] = {

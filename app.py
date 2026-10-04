@@ -4019,9 +4019,12 @@ elif page == "Rewards Card — demo rewards card":
         "It is **not** the checking account — paying the card still shows there."
     )
 
+    from engine.ledger_rules import card_owed_once, collapse_same_visit_pending
+
     card_rows = _black_card_rows(all_actuals)
     snap = load_black_card_snapshot()
-    pending = list(snap.get("pending") or [])
+    # Same visit once: do not stack pre-tip, tip-final, and stale pending.
+    pending = collapse_same_visit_pending(list(snap.get("pending") or []))
     pending_purchases = [p for p in pending if (p.get("type") or "") != "Payment"]
     pending_payments = [p for p in pending if (p.get("type") or "") == "Payment"]
     pending_purchase_total = abs(sum(float(p.get("amount") or 0) for p in pending_purchases))
@@ -4039,29 +4042,28 @@ elif page == "Rewards Card — demo rewards card":
     _avail_f = _fnum(snap.get("available_credit"))
     _posted_f = _fnum(snap.get("posted_balance"))
     _pend_hdr = _fnum(snap.get("pending_header_total"))
-    _pend_net = abs(_pend_hdr) if _pend_hdr is not None else float(pending_purchase_total or 0)
+    # Line items win over the header so a header is not added on top of them.
+    # A header alone is one signed figure, not posted actuals and not abs()'d
+    # into a second copy of pending.
+    if pending_purchases or pending_payments:
+        _pend_once = float(pending_purchase_total or 0)
+    else:
+        _pend_once = float(_pend_hdr) if _pend_hdr is not None else 0.0
+    _pend_net = _pend_once
     _path_a = round(_limit_f - _avail_f, 2) if _limit_f is not None and _avail_f is not None else None
     _path_b = (
         round(_posted_f + _pend_net, 2) if _posted_f is not None else None
     )
     _snap_current = _fnum(snap.get("current_balance"))
-    # Prefer a tied value; else Path A; else Path B; else snapshot current
-    _tie = (
-        _path_a is not None
-        and _path_b is not None
-        and abs(_path_a - _path_b) <= 0.05
+    # Limit minus available already reserves pending once. Prefer that over
+    # current balance when the two paths disagree. Do not add pending again.
+    live_bal = card_owed_once(
+        limit=_limit_f,
+        available=_avail_f,
+        posted=_posted_f,
+        pending=_pend_once if (_pend_hdr is not None or pending_purchases or pending_payments) else None,
+        current=_snap_current,
     )
-    if _tie:
-        live_bal = _path_a
-    elif _path_a is not None and _path_b is not None:
-        # Mismatch: prefer explicit Chase current if present, else Path B (posted+pending)
-        live_bal = _snap_current if _snap_current is not None else _path_b
-    elif _path_a is not None:
-        live_bal = _path_a
-    elif _path_b is not None:
-        live_bal = _path_b
-    else:
-        live_bal = _snap_current
     as_of = snap.get("as_of") or ""
 
     if not card_rows:
