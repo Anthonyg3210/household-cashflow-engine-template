@@ -230,6 +230,13 @@ DEFAULT_SETTINGS = {
 
 
 def get_settings(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Projection settings only.
+
+    Returns start/end dates, start_balance, warning/breach thresholds, and
+    suppress_rules_through. Live-checking keys stored on the settings table
+    are intentionally omitted. Read those from the live-checking sidecar or
+    engine.live_checking helpers, not from this dict.
+    """
     rows = conn.execute("SELECT key, value FROM settings").fetchall()
     s = dict(DEFAULT_SETTINGS)
     s.update({r["key"]: r["value"] for r in rows})

@@ -5,6 +5,7 @@ import json
 import sqlite3
 from pathlib import Path
 
+from engine import db as dbmod
 from engine.live_checking import (
     check_live_checking_consistency,
     set_live_checking,
@@ -97,3 +98,15 @@ def test_repo_live_checking_consistency_empty():
         import pytest
         pytest.skip("no data/live_checking.json in template (expected)")
     assert check_live_checking_consistency() == []
+
+
+def test_get_settings_omits_live_checking_keys(tmp_path: Path):
+    """Projection helper must not surface live checking even when the row exists."""
+    set_live_checking(1500.00, "2026-09-15", root=tmp_path)
+    conn = sqlite3.connect(str(tmp_path / "data" / "cashflow.db"))
+    conn.row_factory = sqlite3.Row
+    settings = dbmod.get_settings(conn)
+    conn.close()
+    assert settings["start_balance"] == 5000.00
+    assert "live_checking_balance" not in settings
+    assert not any(str(k).startswith("live_checking") for k in settings)

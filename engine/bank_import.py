@@ -1331,7 +1331,7 @@ def write_import_report(report: dict, settings: dict, path: Path) -> None:
         "",
         "## Confirmation",
         "",
-        f"- start_balance still **{sb}** (expected 5000.00)",
+        f"- start_balance left unchanged at **{sb}** (import does not overwrite an existing projection anchor)",
         f"- start_date / end_date unchanged: {settings.get('start_date')} / {settings.get('end_date')}",
         "- recurring_rules and scenarios were not wiped",
         "",

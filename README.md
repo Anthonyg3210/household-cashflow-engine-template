@@ -63,6 +63,7 @@ Files land under `data/` (and backups under `data/backups/`) and stay local. Do 
 
 - **Settings → Household backup & restore** writes/reads a whole-household ZIP.
 - Where truth lives: `DATA_AND_PRIVACY.md`.
+- Generic process rules (no household ledger): `docs/SHAREABLE_OPERATING_RULES.md`.
 
 ## Project layout
 

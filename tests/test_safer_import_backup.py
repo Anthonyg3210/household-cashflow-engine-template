@@ -13,6 +13,7 @@ from engine.bank_import import (
     import_csv,
     preview_csv_import,
     txn_fingerprint,
+    write_import_report,
 )
 from engine.household_backup import (
     create_household_backup,
@@ -296,3 +297,34 @@ def test_legacy_replace_bool_still_works(tmp_path):
     r = import_csv(conn, csv1, replace_csv_actuals=True, create_backup=False, root=tmp_path)
     assert r["mode"] == "replace"
     assert r["rows_imported"] == 1
+
+
+def test_import_report_echoes_stored_start_balance_not_demo_default(tmp_path):
+    """Import confirmation must not hardcode the synthetic demo anchor."""
+    report = {
+        "rows_imported": 1,
+        "rows_parsed": 1,
+        "date_min": "2026-01-02",
+        "date_max": "2026-01-02",
+        "total_in": 0.0,
+        "total_out": 10.0,
+        "categorized": 1,
+        "pct_categorized": 100.0,
+        "uncategorized": 0,
+        "taxonomy_version": 1,
+        "replace_policy": "merge",
+        "top_categories_by_spend": [],
+        "top_uncategorized": [],
+        "sample_mapped": [],
+    }
+    settings = {
+        "start_balance": 250.5,
+        "start_date": "2026-01-01",
+        "end_date": "2028-01-01",
+    }
+    out = tmp_path / "import_report.md"
+    write_import_report(report, settings, out)
+    body = out.read_text(encoding="utf-8")
+    assert "expected 5000" not in body
+    assert "left unchanged at **250.5**" in body
+    assert "2026-01-01" in body
