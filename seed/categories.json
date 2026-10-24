@@ -1,0 +1,128 @@
+{
+  "version": 1,
+  "household": "Alex Rivera & Jordan Lee (synthetic)",
+  "sections": [
+    {
+      "name": "Income",
+      "items": [
+        {
+          "name": "Alex's Income",
+          "type": "income"
+        },
+        {
+          "name": "Jordan's Income",
+          "type": "income"
+        },
+        {
+          "name": "Other Income",
+          "type": "income"
+        }
+      ]
+    },
+    {
+      "name": "Housing",
+      "items": [
+        {
+          "name": "Home Mortgage",
+          "type": "expense"
+        },
+        {
+          "name": "HOA",
+          "type": "expense"
+        }
+      ]
+    },
+    {
+      "name": "Utilities",
+      "items": [
+        {
+          "name": "Electric",
+          "type": "expense"
+        },
+        {
+          "name": "Water",
+          "type": "expense"
+        },
+        {
+          "name": "Gas Bill",
+          "type": "expense"
+        },
+        {
+          "name": "Internet",
+          "type": "expense"
+        }
+      ]
+    },
+    {
+      "name": "Debt",
+      "items": [
+        {
+          "name": "Student Loans",
+          "type": "expense"
+        }
+      ]
+    },
+    {
+      "name": "Transfers",
+      "items": [
+        {
+          "name": "Savings",
+          "type": "transfer"
+        },
+        {
+          "name": "Partner Allowance",
+          "type": "transfer"
+        },
+        {
+          "name": "Jordan's Allowance",
+          "type": "transfer"
+        }
+      ]
+    },
+    {
+      "name": "Lifestyle",
+      "items": [
+        {
+          "name": "Jordan's Craft Club",
+          "type": "expense"
+        },
+        {
+          "name": "Fitness Membership",
+          "type": "expense"
+        },
+        {
+          "name": "Video Stream",
+          "type": "expense"
+        },
+        {
+          "name": "Music Subscription",
+          "type": "expense"
+        },
+        {
+          "name": "Streaming Bundle",
+          "type": "expense"
+        },
+        {
+          "name": "Lawn Service",
+          "type": "expense"
+        },
+        {
+          "name": "Car Wash Club",
+          "type": "expense"
+        },
+        {
+          "name": "Park Pass",
+          "type": "expense"
+        },
+        {
+          "name": "Home Cleaning",
+          "type": "expense"
+        },
+        {
+          "name": "Car Insurance",
+          "type": "expense"
+        }
+      ]
+    }
+  ]
+}

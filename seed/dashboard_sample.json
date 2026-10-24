@@ -1,0 +1,67 @@
+{
+  "years": {
+    "2026": [
+      {
+        "month": "January",
+        "monthEndBalance": 3214.58,
+        "negativeDays": 0
+      },
+      {
+        "month": "February",
+        "monthEndBalance": 2786.43,
+        "negativeDays": 0
+      },
+      {
+        "month": "March",
+        "monthEndBalance": 4531.07,
+        "negativeDays": 0
+      },
+      {
+        "month": "April",
+        "monthEndBalance": 4096.92,
+        "negativeDays": 0
+      },
+      {
+        "month": "May",
+        "monthEndBalance": 3817.36,
+        "negativeDays": 0
+      },
+      {
+        "month": "June",
+        "monthEndBalance": 2389.71,
+        "negativeDays": 0
+      },
+      {
+        "month": "July",
+        "monthEndBalance": 3642.15,
+        "negativeDays": 0
+      },
+      {
+        "month": "August",
+        "monthEndBalance": 2517.84,
+        "negativeDays": 0
+      },
+      {
+        "month": "September",
+        "monthEndBalance": 2174.09,
+        "negativeDays": 0
+      },
+      {
+        "month": "October",
+        "monthEndBalance": 1963.28,
+        "negativeDays": 0
+      },
+      {
+        "month": "November",
+        "monthEndBalance": 1782.56,
+        "negativeDays": 0
+      },
+      {
+        "month": "December",
+        "monthEndBalance": 1491.37,
+        "negativeDays": 2
+      }
+    ]
+  },
+  "note": "SYNTHETIC demo balances only"
+}

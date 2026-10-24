@@ -1,0 +1,19 @@
+{
+  "_comment": "Synthetic merchant hints for demo imports only",
+  "NORTHSTAR TECHNOL PAYROLL": {
+    "category": "Alex's Income",
+    "stream": "primary"
+  },
+  "BRIGHTSTART PAYROLL": {
+    "category": "Other Income",
+    "stream": "side_gig"
+  },
+  "DEMO GROCERY #1": {
+    "category": "Groceries",
+    "stream": null
+  },
+  "CITY POWER & LIGHT": {
+    "category": "Electric",
+    "stream": null
+  }
+}

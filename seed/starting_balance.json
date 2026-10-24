@@ -1,0 +1,29 @@
+{
+  "preferredSeed": {
+    "date": "2026-08-31",
+    "source": "synthetic demo month-end",
+    "amount": 2531.64,
+    "note": "Fictional EOD; forecast begins 2026-09-01"
+  },
+  "monthEndAugust2026": {
+    "date": "2026-08-31",
+    "amount": 2531.64
+  },
+  "sep2026Cached": {
+    "2026-09-01": 2296.81,
+    "2026-09-11": 4986.27,
+    "2026-09-13": 4093.55,
+    "2026-09-30": 2174.09,
+    "monthEndTotal": 2174.09
+  },
+  "mortgagePayment": {
+    "source": "demo_seed",
+    "label": "Demo home equity / second payment",
+    "amount": 947.62
+  },
+  "signConvention": "Positive EOD = checking balance remaining",
+  "preferred_seed_eod": 4986.27,
+  "preferred_seed_as_of": "2026-09-12",
+  "preferred_seed_source": "synthetic demo",
+  "note_override": "Demo start_balance 4986.27 on 2026-09-12 for template smoke tests."
+}
