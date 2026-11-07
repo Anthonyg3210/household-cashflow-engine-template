@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Household Cashflow Engine pre-push gate: every rule has a test; nothing ships red.
+# Enable once per clone:   git config core.hooksPath .githooks
+# Order: (0) working-tree push lock  (1) privacy guard  (2) full pytest (xdist when available)  (3) prod_gate
+#        (4) rules ledger drift check.
+# Full timestamped log: $HCE_PREPUSH_LOGDIR/prepush-<ts>.log. A failed gate appends to failures.jsonl there;
+# tests/test_failure_log.py then requires a docs/FAILURE_LOG.md entry for that day. Docs: docs/PUSH_LOCK_AND_GATE.md
+# Never bypass with --no-verify; fix the failure instead.
+set -o pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 1
+export PYTHONDONTWRITEBYTECODE=1   # stale .pyc from deleted tmp roots break later runs
+# git exports GIT_DIR / GIT_INDEX_FILE to hooks; a test's tmp `git init && commit` would otherwise write to THIS repo.
+unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_PREFIX
+PY="${HCE_PYTHON:-$(command -v python3)}"
+if [ -n "${HCE_PREPUSH_CMD:-}" ]; then
+  bash -c "$HCE_PREPUSH_CMD" || { echo "pre-push: BLOCKED (gate command failed)" >&2; exit 1; }
+  exit 0
+fi
+LOGDIR="${HCE_PREPUSH_LOGDIR:-$HOME/.hce-prepush-logs}"
+mkdir -p "$LOGDIR" 2>/dev/null || LOGDIR="${TMPDIR:-/tmp}"
+LOG="$LOGDIR/prepush-$(date +%Y%m%dT%H%M%S).log"
+stamp() { local l; while IFS= read -r l; do printf '%(%H:%M:%S)T %s\n' -1 "$l"; done; }
+say() { printf '%(%H:%M:%S)T pre-push: %s\n' -1 "$*" | tee -a "$LOG" >&2; }
+run_logged() { "$@" 2>&1 | stamp | tee -a "$LOG" >&2; return "${PIPESTATUS[0]}"; }
+blocked() {
+  printf '{"ts":"%s","stage":"%s","log":"%s"}\n' "$(date -Iseconds)" "$1" "$LOG" >> "$LOGDIR/failures.jsonl" 2>/dev/null
+  say "BLOCKED: $1 failed. Full log: $LOG"
+  say "known-cause hint from docs/FAILURE_LOG.md:"
+  run_logged "$PY" scripts/failure_summary.py --hint "$LOG" || true
+  say "Log it: add an entry to docs/FAILURE_LOG.md (date, failing test, cause, fix, time lost)."
+  exit 1
+}
+LOCK="${HCE_PUSH_LOCK:-$(git rev-parse --git-common-dir)/hce-push.lock}"
+if [ -z "${HCE_PUSH_LOCK_HELD:-}" ] && command -v flock >/dev/null 2>&1; then
+  say "WARNING: push not wrapped in scripts/with_push_lock.sh; taking $LOCK now (waits up to 120 s)"
+  exec 9>"$LOCK" && flock -w 120 9 || { say "BLOCKED: could not get $LOCK"; exit 1; }
+fi
+T0=$SECONDS
+say "start $(git rev-parse --short HEAD) python=$PY"
+run_logged "$PY" scripts/privacy_guard.py || blocked "privacy guard"
+XARGS=()
+if [ -z "${HCE_NO_XDIST:-}" ] && "$PY" -c 'import xdist' 2>/dev/null; then XARGS=(-n auto); fi
+say "running full pytest suite ${XARGS[*]}"
+run_logged "$PY" -m pytest -q -p no:cacheprovider -rfE --durations=10 "${XARGS[@]}" || blocked "pytest"
+say "running prod_gate"
+run_logged "$PY" -m engine.prod_gate || blocked "prod_gate"
+say "running rules ledger drift check"
+run_logged "$PY" scripts/rules_drift_check.py || blocked "rules drift check"
+say "PASS in $((SECONDS - T0)) s (log: $LOG)"

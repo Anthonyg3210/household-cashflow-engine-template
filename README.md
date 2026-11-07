@@ -98,3 +98,10 @@ forecast guard) is always on. Optional modules — **Debt Paydown**, **Net Worth
 - **Start My Household (Clean)** leaves them off and never injects demo debts / tax / retirement / rewards sidecars.
 - Due-date and variable-amount **learning** turn on automatically once transaction history is sufficient (never an install prompt).
 
+
+## Safety rails
+
+Turn on the pre-push gate once per clone with `git config core.hooksPath .githooks`. It runs the privacy guard, the
+full test suite, the integrity gate and the rules drift check before any push. See
+[docs/PUSH_LOCK_AND_GATE.md](docs/PUSH_LOCK_AND_GATE.md) for the push lock, failure log and trend check, live check and
+rollback switch, and [docs/DECISIONS_LEDGER.md](docs/DECISIONS_LEDGER.md) for recording household rules.
